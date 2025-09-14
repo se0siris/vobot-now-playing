@@ -31,6 +31,7 @@ class Ui_MainWindow(object):
         self.verticalLayout_2 = QtWidgets.QVBoxLayout(self.frame)
         self.verticalLayout_2.setObjectName("verticalLayout_2")
         self.lbl_preview = QtWidgets.QLabel(self.frame)
+        self.lbl_preview.setScaledContents(False)
         self.lbl_preview.setObjectName("lbl_preview")
         self.verticalLayout_2.addWidget(self.lbl_preview)
         self.verticalLayout.addWidget(self.frame)

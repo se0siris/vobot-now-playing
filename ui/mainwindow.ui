@@ -35,6 +35,9 @@
          <property name="text">
           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;center&quot;&gt;Nothing playing&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
          </property>
+         <property name="scaledContents">
+          <bool>false</bool>
+         </property>
         </widget>
        </item>
       </layout>

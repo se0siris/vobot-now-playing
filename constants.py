@@ -4,3 +4,6 @@ VERSION = f"{'.'.join(map(str, VERSION_NUMBER[:3]))} - {VERSION_DATE}"
 
 APP_NAME = 'Vobot Now Playing'
 ORG_NAME = 'overThere'
+
+TCP_IP = '192.168.1.15'
+TCP_PORT = 32150

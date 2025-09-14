@@ -7,4 +7,11 @@ dependencies = [
     "coloredlogs~=15.0.1",
     "PyQt5-Qt5==5.15.2",
     "PyQt5==5.15.11",
+    "winrt-runtime>=3.2.1",
+    "winrt-windows.media.control>=3.2.1",
+    "winrt-windows.foundation>=3.2.1",
+    "winrt-windows.foundation.collections>=3.2.1",
+    "winrt-windows.storage",
+    "winrt-windows.storage.streams",
+    "pillow>=11.3.0",
 ]
