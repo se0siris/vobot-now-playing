@@ -1,0 +1,9 @@
+.idea/
+.vscode/
+.venv/
+build/
+dist/
+*.pyc
+*.ini
+*.log
+*.db
