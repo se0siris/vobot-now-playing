@@ -95,8 +95,13 @@ async def tcp_server():
 
 
 async def on_stop():
-    # User triggered to leave this App. This App is no longer visible. all function should be deactivated
-    # This App becomes STOPPED state
+    """
+    User triggered to leave this app. This app is no longer visible. All function should be
+    deactivated.
+
+    This app enters the STOPPED state.
+    :return:
+    """
     global scr, tcp_server_task, img_widget
     logger.info('on stop')
     if scr:
@@ -112,8 +117,13 @@ async def on_stop():
         tcp_server_task = None
 
 async def on_start():
-    # User triggered to enter this App for the first time, or from STOPPED state, all function should be initialed
-    # Then, this App becomes STARTED state
+    """
+    User triggered to enter this app for the first time, or from a STOPPED state. All functions
+    should be initialized.
+
+    App enters the STARTED state.
+    :return:
+    """
     global scr, label, img_widget, tcp_server_task
     logger.info('on start')
 
