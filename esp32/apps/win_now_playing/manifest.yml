@@ -1,6 +1,6 @@
 application:
     name: Windows Now Playing
-    version: 1.0.0
+    version: 2.0.0
     description: Now Playing application to receive and display media information via TCP from a Windows client.
     author: Gary Hughes
     author_email: gary@overthere.co.uk
@@ -16,3 +16,4 @@ system_requirements:
 files:
     include:
         - __init__.py
+        - resources/icon.png

@@ -18,13 +18,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.setupUi(self)
         self.setWindowTitle(f'{QApplication.applicationName()} - v{QApplication.applicationVersion()}')
 
-        logger.debug('MainWindow initialized')
+        self.notifications_wrapper = NotificationsWrapper()
+        self._notifications_thread = QThread()
 
+        logger.debug('MainWindow initialized')
         QTimer.singleShot(0, self.setup_notifications)
 
     def setup_notifications(self):
-        self.notifications_wrapper = NotificationsWrapper()
-        self._notifications_thread = QThread()
         self.notifications_wrapper.moveToThread(self._notifications_thread)
         self._notifications_thread.started.connect(self.notifications_wrapper.start)
         self.notifications_wrapper.signal_thumb_bytes.connect(self.receive_thumb_bytes)
