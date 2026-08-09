@@ -14,7 +14,10 @@ import winrt.windows.storage.streams as streams
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from device_link import DeviceLink, probe
+import discovery
+import settings
+
+from device_link import DeviceLink, SendResult
 from media_image import ArtworkPicker, FrameCache, art_id_for
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,40 @@ HEARTBEAT_SECONDS = 30
 # would otherwise wait for the next track. Re-checking on a timer covers both.
 POLL_SECONDS = 10
 
+# A dock that is merely switched off should not have us broadcasting every time
+# a push fails - that would be every poll.
+DISCOVERY_COOLDOWN = 60
+
+# Artwork at least this many pixels is good enough to fill the 320x240 panel, so
+# there is nothing to gain by looking for a better version.
+#
+# Below it, the poll keeps re-reading the thumbnail. Sources sometimes publish a
+# small placeholder first and the real cover a moment later, and while a track is
+# paused no WinRT events fire at all - so without this the client would hold a
+# 60x60 image, stretched over the whole panel, for the life of that track.
+GOOD_ART_AREA = 240 * 240
+
+# Pushed when Windows has no media session at all, so the dock can go back to
+# its placeholder instead of holding the last track for ever.
+IDLE_PAYLOAD = {
+    'status': 'IDLE',
+    'title': '',
+    'artist': '',
+    'album': '',
+    'art_id': None,
+    'width': 0,
+    'height': 0,
+}
+
+
+# Transport commands the UI can ask for, mapped to the session method that
+# performs them. Which are actually usable is reported per-source in TrackInfo.
+TRANSPORT_COMMANDS = {
+    'previous': 'try_skip_previous_async',
+    'next': 'try_skip_next_async',
+    'play_pause': 'try_toggle_play_pause_async',
+}
+
 
 @dataclass(frozen=True)
 class TrackInfo:
@@ -40,6 +77,11 @@ class TrackInfo:
     status: str
     art_id: str | None = None
     thumbnail: bytes | None = None
+    # What this source will accept. Sources differ - a browser tab often offers
+    # no previous/next at all - so the buttons follow these rather than assuming.
+    can_previous: bool = False
+    can_next: bool = False
+    can_play_pause: bool = False
 
     @property
     def is_playing(self) -> bool:
@@ -48,6 +90,29 @@ class TrackInfo:
     @property
     def status_text(self) -> str:
         return self.status.replace('_', ' ').title()
+
+
+def _available_controls(playback_info) -> tuple[bool, bool, bool]:
+    """Which transport buttons this source will honour.
+
+    Reported by Windows per session rather than assumed: a browser tab commonly
+    offers play/pause with no track skipping, and a source that has just started
+    may briefly offer nothing at all.
+    """
+    try:
+        controls = playback_info.controls
+        if controls is None:
+            return False, False, False
+        return (
+            bool(controls.is_previous_enabled),
+            bool(controls.is_next_enabled),
+            bool(controls.is_play_pause_toggle_enabled
+                 or controls.is_play_enabled
+                 or controls.is_pause_enabled),
+        )
+    except Exception:
+        logger.debug('Could not read the available controls', exc_info=True)
+        return False, False, False
 
 
 async def get_thumbnail_data(thumbnail):
@@ -85,6 +150,8 @@ class NotificationsWrapper(QObject):
     signal_track = pyqtSignal(object)
     # Emitted after every push attempt: (reachable, message).
     signal_device_state = pyqtSignal(bool, str)
+    # A dock was found at a new address; the GUI thread owns saving it.
+    signal_device_discovered = pyqtSignal(str, int)
 
     def __init__(self, parent=None):
         super(NotificationsWrapper, self).__init__(parent)
@@ -94,6 +161,9 @@ class NotificationsWrapper(QObject):
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event: asyncio.Event | None = None
+        # One refresh at a time; see _schedule_refresh().
+        self._refresh_task: asyncio.Task | None = None
+        self._refresh_wanted = False
         # An address change that arrived before the loop was up.
         self._pending_address: tuple[str, int] | None = None
 
@@ -106,6 +176,7 @@ class NotificationsWrapper(QObject):
         self._last_sent_key: tuple | None = None
         self._last_sent_at: float = 0.0
         self._last_device_ok: bool | None = None
+        self._last_discovery_at: float = 0.0
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -140,6 +211,33 @@ class NotificationsWrapper(QObject):
             return
         loop.call_soon_threadsafe(self._apply_device_address, host, port)
 
+    def send_command(self, command: str):
+        """Run a transport control. Safe to call from the GUI thread."""
+        loop = self._loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._start_command, command)
+
+    def _start_command(self, command: str):
+        asyncio.create_task(self._run_command(command))
+
+    async def _run_command(self, command: str):
+        method_name = TRANSPORT_COMMANDS.get(command)
+        session = self._session
+        if session is None or method_name is None:
+            logger.debug('Ignoring transport command %r', command)
+            return
+        try:
+            accepted = await getattr(session, method_name)()
+            logger.info('Transport command %s: %s', command,
+                        'accepted' if accepted else 'refused by the source')
+        except Exception:
+            logger.exception('Transport command %s failed', command)
+            return
+        # The source raises its own change event, but not always promptly - and
+        # not at all if it refused. Refresh so the UI cannot sit on stale state.
+        self._schedule_refresh()
+
     def _apply_device_address(self, host: str, port: int):
         self.device.set_address(host, port)
         # Forget the dedupe state and the cached device status so the new device
@@ -149,7 +247,23 @@ class NotificationsWrapper(QObject):
         self._schedule_refresh()
 
     def _schedule_refresh(self):
-        asyncio.create_task(self.get_now_playing())
+        """Ask for a refresh, collapsing a burst of events into one.
+
+        A single track change raises a handful of WinRT events in the same
+        instant, and each used to start its own task - nine concurrent reads of
+        the same thumbnail stream for one change. Now a refresh already running
+        just sets a flag, and runs exactly once more when it finishes, so the
+        last state is never missed but the middle of a burst is not fetched.
+        """
+        self._refresh_wanted = True
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        self._refresh_task = asyncio.create_task(self._refresh_until_settled())
+
+    async def _refresh_until_settled(self):
+        while self._refresh_wanted:
+            self._refresh_wanted = False
+            await self.get_now_playing()
 
     async def main(self):
         logger.debug('NotificationsWrapper started.')
@@ -217,7 +331,7 @@ class NotificationsWrapper(QObject):
         self._bind_session(self._manager.get_current_session())
         # A new source means the old artwork and dedupe state are meaningless.
         self._last_sent_key = None
-        asyncio.create_task(self.get_now_playing())
+        self._schedule_refresh()
 
     def _on_session_event(self, sender, args):
         """WinRT calls this on a pool thread - hop back onto our loop."""
@@ -228,12 +342,72 @@ class NotificationsWrapper(QObject):
 
     # -- Reporting ---------------------------------------------------------
 
-    async def _check_device(self):
-        """Reachability check, run off the loop so a timeout cannot stall it."""
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None, probe, self.device.host, self.device.port)
+    async def _push(self, payload, frame_bytes):
+        """Send one state to the dock, skipping anything it already has.
+
+        Beyond saving the round trip, deduping keeps the device from re-applying
+        identical text to a label that is mid-scroll. The heartbeat forces one
+        through periodically so a device that restarted picks the display back
+        up without waiting for the next song.
+        """
+        payload_key = tuple(payload.get(key) for key in
+                            ('status', 'title', 'artist', 'album', 'art_id'))
+        now = time.monotonic()
+        if (payload_key == self._last_sent_key
+                and now - self._last_sent_at < HEARTBEAT_SECONDS):
+            logger.debug('No change since last push; skipping')
+            return
+
+        if not self.device.host:
+            await self._discover_device('no address is configured')
+            if not self.device.host:
+                self._report_device(SendResult(False, 'No dock configured'))
+                return
+
+        logger.info('Pushing: %s', payload)
+        result = self.device.send(payload, frame_bytes)
+        if result:
+            self._last_sent_key = payload_key
+            self._last_sent_at = now
+        else:
+            # Retry on the next event rather than waiting for a change.
+            self._last_sent_key = None
+            await self._maybe_rediscover()
         self._report_device(result)
+
+    async def _maybe_rediscover(self):
+        """After a failed push, see whether the dock simply moved."""
+        if not settings.auto_discover():
+            return
+        now = time.monotonic()
+        if now - self._last_discovery_at < DISCOVERY_COOLDOWN:
+            return
+        self._last_discovery_at = now
+        await self._discover_device('the saved address stopped responding')
+
+    async def _discover_device(self, reason: str) -> bool:
+        """Broadcast for a dock and adopt it if it is somewhere new.
+
+        Runs off the loop: the search blocks for over a second.
+        """
+        logger.info('Searching for a dock - %s', reason)
+        loop = asyncio.get_running_loop()
+        devices = await loop.run_in_executor(None, discovery.discover)
+        if not devices:
+            logger.info('No dock answered the discovery probe')
+            return False
+
+        device = devices[0]
+        if (device.host, device.port) == (self.device.host, self.device.port):
+            logger.info('Discovery returned the address already in use')
+            return False
+
+        logger.info('Adopting discovered dock at %s:%d', device.host, device.port)
+        self.device.set_address(device.host, device.port)
+        self._last_sent_key = None
+        self._last_device_ok = None
+        self.signal_device_discovered.emit(device.host, device.port)
+        return True
 
     def _report_device(self, result):
         """Emit device state, but only when it actually changes."""
@@ -255,9 +429,11 @@ class NotificationsWrapper(QObject):
 
             if session is None:
                 self.signal_track.emit(None)
-                # Nothing to push, so the only way to keep the connection
-                # indicator honest is to ask the device directly.
-                await self._check_device()
+                # Tell the dock too, so it drops the last track's artwork and
+                # goes back to its placeholder rather than showing a stale one.
+                self._artwork.reset()
+                self._frames.clear()
+                await self._push(dict(IDLE_PAYLOAD), None)
                 return
 
             media_props = await session.try_get_media_properties_async()
@@ -269,10 +445,14 @@ class NotificationsWrapper(QObject):
             album = media_props.album_title or ''
             track_key = (title, artist, album)
 
-            # A poll tick re-reads the metadata cheaply, but re-reading the
-            # thumbnail stream every 10 seconds is pure waste when the track has
-            # not moved on.
-            if poll and self._artwork.key == track_key and self._artwork.current:
+            # A poll tick re-reads the metadata cheaply, but the thumbnail is a
+            # cross-process stream read - worth skipping once we hold artwork
+            # good enough to fill the panel. Until then keep looking, because a
+            # better version often turns up shortly after the first.
+            holding_good_art = (self._artwork.key == track_key
+                                and self._artwork.current
+                                and self._artwork.best_area >= GOOD_ART_AREA)
+            if poll and holding_good_art:
                 thumb_bytes = self._artwork.current
             else:
                 raw_thumb = await get_thumbnail_data(media_props.thumbnail)
@@ -283,11 +463,17 @@ class NotificationsWrapper(QObject):
             if thumb_bytes:
                 frame_bytes, width, height = self._frames.frame_for(
                     thumb_bytes, art_id, self.device.frame_size)
+                if frame_bytes is None:
+                    # Undecodable. Announcing an art_id we cannot then supply
+                    # would only earn a geometry error from the device.
+                    art_id = None
+                    self._frames.clear()
             else:
                 logger.debug('No thumbnail available.')
                 frame_bytes, width, height = None, 0, 0
                 self._frames.clear()
 
+            can_previous, can_next, can_play_pause = _available_controls(playback_info)
             self.signal_track.emit(TrackInfo(
                 title=title,
                 artist=artist,
@@ -295,9 +481,12 @@ class NotificationsWrapper(QObject):
                 status=status.name,
                 art_id=art_id,
                 thumbnail=thumb_bytes,
+                can_previous=can_previous,
+                can_next=can_next,
+                can_play_pause=can_play_pause,
             ))
 
-            now_playing_data = {
+            await self._push({
                 'status': status.name,
                 'title': title,
                 'artist': artist,
@@ -305,26 +494,7 @@ class NotificationsWrapper(QObject):
                 'art_id': art_id,
                 'width': width,
                 'height': height,
-            }
-            # Skip pushes that carry nothing new. Beyond saving the round trip,
-            # it keeps the device from re-applying identical text to a label
-            # that is mid-scroll.
-            payload_key = (status.name, title, artist, album, art_id)
-            now = time.monotonic()
-            if (payload_key == self._last_sent_key
-                    and now - self._last_sent_at < HEARTBEAT_SECONDS):
-                logger.debug('No change since last push; skipping')
-                return
-
-            logger.info('Now playing: %s', now_playing_data)
-            result = self.device.send(now_playing_data, frame_bytes)
-            if result:
-                self._last_sent_key = payload_key
-                self._last_sent_at = now
-            else:
-                # Retry on the next event rather than waiting for a change.
-                self._last_sent_key = None
-            self._report_device(result)
+            }, frame_bytes)
 
         except Exception:
             logger.exception('Failed to read or push the current media session')

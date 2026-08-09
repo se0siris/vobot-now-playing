@@ -11,7 +11,12 @@ from dataclasses import dataclass
 
 import settings
 
-from constants import FRAME_SIZE_DEFAULT, PROTOCOL_VERSION, TCP_TIMEOUT
+from constants import (
+    FRAME_SIZE_DEFAULT,
+    PROTOCOL_VERSION,
+    TCP_ART_TIMEOUT,
+    TCP_TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +101,8 @@ class DeviceLink:
                         logger.warning('Device asked for artwork we do not have')
                         self._device_art_id = None
                         return SendResult(False, 'Device asked for artwork we do not have')
+                    # Past the handshake now; the body needs a real budget.
+                    sock.settimeout(TCP_ART_TIMEOUT)
                     sock.sendall(image_bytes)
                     final = self._read_ack(sock, buffer)
                     if not final.get('ok', False):

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Keys.
 KEY_HOST = 'device/host'
 KEY_PORT = 'device/port'
+KEY_AUTO_DISCOVER = 'device/auto_discover'
 KEY_CLOSE_TO_TRAY = 'window/close_to_tray'
 KEY_START_MINIMIZED = 'window/start_minimized'
 KEY_GEOMETRY = 'window/geometry'
@@ -30,6 +31,7 @@ KEY_GEOMETRY = 'window/geometry'
 DEFAULTS = {
     KEY_HOST: TCP_IP,
     KEY_PORT: TCP_PORT,
+    KEY_AUTO_DISCOVER: True,
     KEY_CLOSE_TO_TRAY: True,
     KEY_START_MINIMIZED: False,
 }
@@ -91,6 +93,14 @@ def set_device_address(host: str, port: int) -> None:
     settings = _settings()
     settings.setValue(KEY_HOST, host)
     settings.setValue(KEY_PORT, int(port))
+
+
+def auto_discover() -> bool:
+    return _to_bool(_settings().value(KEY_AUTO_DISCOVER, DEFAULTS[KEY_AUTO_DISCOVER]))
+
+
+def set_auto_discover(enabled: bool) -> None:
+    _settings().setValue(KEY_AUTO_DISCOVER, bool(enabled))
 
 
 def close_to_tray() -> bool:

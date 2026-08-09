@@ -69,9 +69,21 @@ logger = logging.getLogger(NAME.lower().replace(' ', '_'))
 # ---------------------------------------------------------------------------
 # 2 adds the art_id handshake: the client announces the artwork it intends to
 # send, and only transfers the 150KB body when we say we do not already have it.
-PROTOCOL_VERSION = 2
+# 3 adds the IDLE status, pushed when Windows has no media session at all, and
+# the UDP discovery service below. Both ends ignore each other's version field,
+# so an older client still works - it simply never sends IDLE.
+PROTOCOL_VERSION = 3
 
 DEFAULT_PORT = 32150
+
+# Discovery deliberately does NOT follow the configured TCP port: a client that
+# already knew the port would not need to discover anything. Fixed here, and the
+# reply carries whatever port the TCP server actually ended up on.
+DISCOVERY_PORT = 32151
+DISCOVERY_MAGIC = b'VOBOT-NOW-PLAYING-DISCOVER'
+DISCOVERY_REPLY_MAGIC = 'VOBOT-NOW-PLAYING'
+# A probe is a short fixed string; anything longer is not for us.
+MAX_PROBE = 256
 
 # Anything longer than this is not a header we sent for.
 MAX_HEADER = 1024
@@ -97,6 +109,18 @@ def _screen_resolution():
 FRAME_W, FRAME_H = _screen_resolution()
 FRAME_SIZE = FRAME_W * FRAME_H * 2  # RGB565, 2 bytes/pixel
 
+
+def _rgb565(red, green, blue):
+    """Pack to the little-endian RGB565 pair the canvas and client both use."""
+    value = ((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3)
+    return bytes([value & 0xFF, value >> 8])
+
+
+# Ground colour behind the placeholder artwork, matching the client's dark
+# panel so the two halves of the project look related.
+IDLE_GROUND = _rgb565(26, 33, 51)
+_IDLE_PATTERN = IDLE_GROUND * (CHUNK // 2)
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -108,7 +132,8 @@ info_bar = None       # translucent strip carrying title/artist
 title_label = None
 artist_label = None
 state_label = None    # play/pause glyph badge
-status_label = None   # centred idle/error text
+status_label = None   # centred error text
+placeholder = None    # app mark, shown whenever there is no artwork
 
 canvas_buf = None     # front buffer - what LVGL is displaying
 back_buf = None       # back buffer - what the socket streams into
@@ -119,8 +144,16 @@ server_running = False
 client_task = None
 busy = False          # one client exchange at a time
 
+discovery_socket = None
+discovery_task = None
+discovery_running = False
+
 art_id = None         # id of the artwork currently in canvas_buf
 have_art = False
+# Whether the canvas already holds the placeholder ground. Repainting it is a
+# 150KB fill plus a full-screen invalidate, and the client re-sends its idle
+# state on every heartbeat.
+ground_is_idle = False
 
 # What is currently on the widgets, so repeat pushes become no-ops. See
 # _set_label() for why writing the same value again is not harmless.
@@ -136,8 +169,12 @@ session = 0
 # ---------------------------------------------------------------------------
 # Buffer helpers
 # ---------------------------------------------------------------------------
-def _blank(buf):
-    """Zero a buffer in CHUNK-sized memcpys. 0x0000 is black in RGB565."""
+def _fill(buf, pattern):
+    """Repeat a CHUNK-sized pattern across a buffer, in memcpy-sized steps.
+
+    Never allocates a full-frame temporary, which is the whole point - a
+    150KB block would land on the big-object heap.
+    """
     view = memoryview(buf)
     total = len(buf)
     offset = 0
@@ -145,8 +182,13 @@ def _blank(buf):
         end = offset + CHUNK
         if end > total:
             end = total
-        view[offset:end] = _ZEROS[:end - offset]
+        view[offset:end] = pattern[:end - offset]
         offset = end
+
+
+def _blank(buf):
+    """Zero a buffer. 0x0000 is black in RGB565."""
+    _fill(buf, _ZEROS)
 
 
 def _swap_frame():
@@ -217,14 +259,52 @@ def _set_label(label, key, text):
 
 
 def _set_status(text):
-    """Centred overlay text. Only shown while there is no artwork behind it."""
+    """Centred overlay text, for errors and the pre-network wait.
+
+    Ordinary 'nothing playing' states are carried by the idle view instead, so
+    this is only shown when there is something the user has to act on.
+    """
     if not status_label:
         return
     try:
         _set_label(status_label, 'status', text)
-        _set_visible(status_label, 'status_shown', not have_art)
+        _set_visible(status_label, 'status_shown', True)
+        _set_visible(placeholder, 'placeholder_shown', False)
     except Exception as exc:
         logger.warning('Status update failed: %s', exc)
+
+
+def _show_placeholder():
+    """Put the app mark on a dark ground where the artwork would be."""
+    global art_id, have_art, ground_is_idle
+    if back_buf is None:
+        return
+    # Only actually repaint when something else is on the canvas.
+    if have_art or not ground_is_idle:
+        _fill(back_buf, _IDLE_PATTERN)
+        _swap_frame()
+        ground_is_idle = True
+    art_id = None
+    have_art = False
+    _set_visible(placeholder, 'placeholder_shown', True)
+
+
+def _show_idle(title):
+    """The main view, with no track: placeholder art plus where to reach us.
+
+    Deliberately the same layout as playback rather than a bare screen of text,
+    so the dock looks like the same app whether or not anything is playing.
+    """
+    try:
+        _set_visible(status_label, 'status_shown', False)
+        _show_placeholder()
+        _set_label(title_label, 'title', title)
+        _set_label(artist_label, 'artist',
+                   '{}:{}'.format(_local_ip(), _configured_port()))
+        _set_label(state_label, 'state', lv.SYMBOL.STOP)
+        _set_visible(info_bar, 'bar_shown', True)
+    except Exception as exc:
+        logger.warning('Idle view failed: %s', exc)
 
 
 def _apply_metadata(meta):
@@ -249,8 +329,9 @@ def _apply_metadata(meta):
         _set_label(state_label, 'state', symbol)
 
         _set_visible(info_bar, 'bar_shown', True)
-        if have_art:
-            _set_visible(status_label, 'status_shown', False)
+        _set_visible(status_label, 'status_shown', False)
+        # A track with no artwork gets the app mark rather than a black hole.
+        _set_visible(placeholder, 'placeholder_shown', not have_art)
     except Exception as exc:
         logger.warning('Metadata update failed: %s', exc)
 
@@ -263,6 +344,18 @@ def _local_ip():
         return getattr(cfg, 'IP', '?')
     except Exception:
         return '?'
+
+
+def _device_identity():
+    """Best-effort id/model, so a client seeing two docks can tell them apart."""
+    identity = {}
+    try:
+        import device
+        identity['device_id'] = str(device.id)
+        identity['model'] = str(device.model)
+    except Exception:
+        pass
+    return identity
 
 
 def _configured_port():
@@ -307,7 +400,7 @@ async def handle_client(reader, writer):
         -> <image_len raw RGB565 bytes>        (only when send_art is true)
         <- {"ok"}\\n
     """
-    global busy, client_task, art_id, have_art
+    global busy, client_task, art_id, have_art, ground_is_idle
 
     claimed = False
     changed_frame = False
@@ -349,6 +442,9 @@ async def handle_client(reader, writer):
         image_len = int(meta.get('image_len') or 0)
         width = int(meta.get('width') or FRAME_W)
         height = int(meta.get('height') or FRAME_H)
+        # Proto 3: Windows has no media session at all, as opposed to a track
+        # that merely has no artwork.
+        idle = (meta.get('status') or '').upper() == 'IDLE'
 
         send_art = False
         clear_art = False
@@ -396,21 +492,22 @@ async def handle_client(reader, writer):
             _swap_frame()
             art_id = incoming_art
             have_art = True
+            ground_is_idle = False
             changed_frame = True
         elif clear_art:
             if back_buf is None:
                 return
-            _blank(back_buf)
-            _swap_frame()
-            art_id = None
-            have_art = False
+            # Back to the placeholder ground rather than black - the same view
+            # the app shows before a client ever connects.
+            _show_placeholder()
             changed_frame = True
 
-        _apply_metadata(meta)
+        if idle:
+            _show_idle('Nothing playing')
+        else:
+            _apply_metadata(meta)
         if geometry_error:
             _set_status(geometry_error)
-        elif not have_art:
-            _set_status('No artwork')
 
         if send_art:
             await _reply(writer, {'ok': True})
@@ -442,7 +539,7 @@ async def run_server():
             _set_status('Waiting for network...')
             await asyncio.sleep_ms(1000)
 
-        _set_status('Waiting for client\n{}:{}'.format(_local_ip(), port))
+        _show_idle('Waiting for client')
         logger.info('TCP server starting on 0.0.0.0:%d', port)
         server = await asyncio.start_server(handle_client, '0.0.0.0', port)
         await server.wait_closed()
@@ -459,6 +556,99 @@ async def run_server():
             except Exception:
                 pass
         server = None
+
+
+# ---------------------------------------------------------------------------
+# UDP discovery
+# ---------------------------------------------------------------------------
+async def run_discovery_server():
+    """Answer broadcast probes so the client can find this dock by itself.
+
+    MicroPython's asyncio has no datagram transport, so this is a non-blocking
+    socket polled from a task. recvfrom() raises EAGAIN when nothing is waiting,
+    which is the normal case - hence the bare sleep on OSError rather than
+    treating it as a failure.
+    """
+    global discovery_socket, discovery_running
+
+    import socket
+
+    discovery_running = True
+    sock = None
+    try:
+        while not net.connected():
+            await asyncio.sleep_ms(1000)
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+        sock.bind(('0.0.0.0', DISCOVERY_PORT))
+        sock.setblocking(False)
+        discovery_socket = sock
+        logger.info('UDP discovery listening on 0.0.0.0:%d', DISCOVERY_PORT)
+
+        while True:
+            try:
+                data, addr = sock.recvfrom(MAX_PROBE)
+            except OSError:
+                # Nothing queued (EAGAIN). Poll rate sets discovery latency;
+                # the client waits well over a second for replies.
+                await asyncio.sleep_ms(150)
+                continue
+
+            if not data or DISCOVERY_MAGIC not in data:
+                continue
+
+            reply = {
+                'magic': DISCOVERY_REPLY_MAGIC,
+                'app': NAME,
+                'proto': PROTOCOL_VERSION,
+                'port': _configured_port(),
+                'ip': _local_ip(),
+            }
+            reply.update(_device_identity())
+            try:
+                sock.sendto(json.dumps(reply).encode('utf-8'), addr)
+                logger.info('Discovery probe from %s answered', addr[0])
+            except Exception as exc:
+                logger.warning('Discovery reply failed: %s', exc)
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning('Discovery server error: %s', exc)
+    finally:
+        discovery_running = False
+        discovery_socket = None
+        if sock:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+async def stop_discovery_server():
+    global discovery_task
+
+    if discovery_socket:
+        # Closing under the task unblocks it even if cancellation is late.
+        try:
+            discovery_socket.close()
+        except Exception:
+            pass
+    if discovery_task:
+        try:
+            discovery_task.cancel()
+        except Exception:
+            pass
+        discovery_task = None
+
+    for _ in range(50):  # up to ~500ms
+        if not discovery_running:
+            break
+        await asyncio.sleep_ms(10)
 
 
 async def stop_server():
@@ -504,14 +694,44 @@ async def on_boot(apm):
     app_mgr = apm
 
 
+def _make_placeholder(parent):
+    """The app mark, standing in for artwork.
+
+    lv.image is LVGL 9 and lv.img is LVGL 8; if neither can show the PNG - no
+    decoder in the build, missing file - fall back to the built-in music symbol,
+    which is part of the font and cannot fail.
+    """
+    cls = getattr(lv, 'image', None) or getattr(lv, 'img', None)
+    if cls is not None:
+        try:
+            image = cls(parent)
+            image.set_src(ICON)
+            image.center()
+            return image
+        except Exception as exc:
+            logger.warning('Placeholder image unavailable (%s); using a symbol', exc)
+
+    try:
+        label = lv.label(parent)
+        label.set_text(lv.SYMBOL.AUDIO)
+        label.set_style_text_color(lv.color_hex(0x8FA6C8), lv.PART.MAIN)
+        label.center()
+        return label
+    except Exception as exc:
+        logger.warning('Placeholder unavailable: %s', exc)
+        return None
+
+
 async def on_start():
     global scr, canvas, canvas_buf, back_buf
     global info_bar, title_label, artist_label, state_label, status_label
-    global server_task, art_id, have_art
+    global placeholder, server_task, discovery_task, art_id, have_art, ground_is_idle
 
     logger.info('on start')
     art_id = None
     have_art = False
+    # Both buffers are filled with the idle ground a few lines down.
+    ground_is_idle = True
     # Widgets are about to be rebuilt, so nothing is on screen yet.
     _shown.clear()
 
@@ -525,14 +745,18 @@ async def on_start():
     # Two full frames so a transfer in progress never touches what is on screen.
     canvas_buf = bytearray(FRAME_SIZE)
     back_buf = bytearray(FRAME_SIZE)
-    _blank(canvas_buf)
-    _blank(back_buf)
+    # Start on the placeholder ground, so the first thing drawn is the idle view
+    # rather than a black rectangle.
+    _fill(canvas_buf, _IDLE_PATTERN)
+    _fill(back_buf, _IDLE_PATTERN)
 
     canvas = lv.canvas(scr)
     canvas.set_buffer(canvas_buf, FRAME_W, FRAME_H, lv.COLOR_FORMAT.RGB565)
     canvas.align(lv.ALIGN.CENTER, 0, 0)
 
     # Everything below is created after the canvas so it draws on top of it.
+    placeholder = _make_placeholder(scr)
+
     status_label = lv.label(scr)
     status_label.set_style_text_color(lv.color_hex(0xFFFFFF), lv.PART.MAIN)
     status_label.set_style_text_align(lv.TEXT_ALIGN.CENTER, lv.PART.MAIN)
@@ -592,6 +816,7 @@ async def on_start():
     lv.scr_load(scr)
 
     server_task = asyncio.create_task(run_server())
+    discovery_task = asyncio.create_task(run_discovery_server())
 
 
 async def on_pause():
@@ -613,7 +838,7 @@ async def on_resume():
 async def on_stop():
     global scr, canvas, canvas_buf, back_buf
     global info_bar, title_label, artist_label, state_label, status_label
-    global art_id, have_art, session
+    global placeholder, art_id, have_art, ground_is_idle, session
 
     logger.info('on stop')
 
@@ -623,6 +848,8 @@ async def on_stop():
 
     art_id = None
     have_art = False
+    # The buffers are about to go; nothing holds the idle ground any more.
+    ground_is_idle = False
     _shown.clear()
 
     # UI first, and with no await before it finishes: the system swaps in the
@@ -642,10 +869,12 @@ async def on_stop():
     artist_label = None
     state_label = None
     status_label = None
+    placeholder = None
     canvas_buf = None
     back_buf = None
 
     await stop_server()
+    await stop_discovery_server()
     gc.collect()
 
 
@@ -665,8 +894,9 @@ def get_settings_json():
                 'default': str(DEFAULT_PORT),
                 'caption': 'Listen port',
                 'name': 'port',
-                'tip': 'Must match TCP_PORT in the Windows client. '
-                       'Restart the app after changing.',
+                'tip': 'Must match the port in the Windows client, or just use '
+                       'Discover there - UDP {} always reports the real port. '
+                       'Restart the app after changing.'.format(DISCOVERY_PORT),
                 'attributes': {
                     'placeholder': str(DEFAULT_PORT),
                     'maxLength': 5,

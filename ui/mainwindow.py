@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
     QMenu,
+    QStyle,
     QSystemTrayIcon,
 )
 
@@ -31,6 +32,9 @@ STATUS_GLYPHS = {
     'PAUSED': '▮▮',   # two vertical bars
     'STOPPED': '■',        # filled square
 }
+
+PLAY_GLYPH = '▶'
+PAUSE_GLYPH = '▮▮'
 
 
 def rounded_pixmap(pixmap: QPixmap, size: int, radius: int, device_pixel_ratio: float = 1.0) -> QPixmap:
@@ -87,6 +91,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.setWindowTitle(f'{QApplication.applicationName()} - v{QApplication.applicationVersion()}')
 
         self.app_icon = QIcon(APP_ICON)
+        # NOT isNull(): QIcon stores the path lazily and reports a missing file
+        # as non-null, only failing when something asks it for a pixmap. An icon
+        # that yields no pixmap gives an *absent* tray icon, not a blank one -
+        # and with close-to-tray on, that leaves no way to quit but Task Manager.
+        if not self.app_icon.availableSizes():
+            logger.warning('Could not load %s; falling back to a stock icon', APP_ICON)
+            self.app_icon = self.style().standardIcon(QStyle.SP_MediaPlay)
         self.setWindowIcon(self.app_icon)
         use_dark_titlebar(self)
 
@@ -101,6 +112,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         self.button_settings.clicked.connect(self.show_settings)
         self.button_hide.clicked.connect(self.hide_to_tray)
+
+        self.button_previous.clicked.connect(lambda: self.send_command('previous'))
+        self.button_play_pause.clicked.connect(lambda: self.send_command('play_pause'))
+        self.button_next.clicked.connect(lambda: self.send_command('next'))
 
         self.show_no_session()
         self.update_device_label(None, '')
@@ -125,6 +140,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._notifications_thread.started.connect(self.notifications_wrapper.start)
         self.notifications_wrapper.signal_track.connect(self.receive_track)
         self.notifications_wrapper.signal_device_state.connect(self.receive_device_state)
+        self.notifications_wrapper.signal_device_discovered.connect(self.receive_discovered_device)
         self._notifications_thread.start()
 
     @pyqtSlot()
@@ -213,6 +229,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     # -- Settings ----------------------------------------------------------
 
+    def send_command(self, command):
+        """Hand a transport control to the worker, which owns the session."""
+        logger.debug('Transport button: %s', command)
+        self.notifications_wrapper.send_command(command)
+
     @pyqtSlot()
     def show_settings(self):
         dialog = SettingsDialog(self)
@@ -241,6 +262,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.lbl_status.setProperty('playing', 'true' if track.is_playing else 'false')
         restyle(self.lbl_status)
 
+        # The button offers the action, not the current state: showing pause
+        # while playing is what every other transport control does.
+        self.button_play_pause.setText(PAUSE_GLYPH if track.is_playing else PLAY_GLYPH)
+        self.button_previous.setEnabled(track.can_previous)
+        self.button_play_pause.setEnabled(track.can_play_pause)
+        self.button_next.setEnabled(track.can_next)
+
         self.set_artwork(track.thumbnail, track.art_id)
 
         tooltip = ' - '.join(part for part in (track.artist, track.title) if part)
@@ -260,6 +288,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.lbl_status.setText('Waiting for a media player')
         self.lbl_status.setProperty('playing', 'false')
         restyle(self.lbl_status)
+        # Kept visible but dead, so the panel does not reflow when playback stops.
+        self.button_play_pause.setText(PLAY_GLYPH)
+        for button in (self.button_previous, self.button_play_pause, self.button_next):
+            button.setEnabled(False)
         self.set_artwork(None, None)
         if self.tray_icon is not None:
             self.tray_icon.setToolTip(QApplication.applicationName())
@@ -296,11 +328,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def receive_device_state(self, ok, message):
         self.update_device_label(ok, message)
 
+    @pyqtSlot(str, int)
+    def receive_discovered_device(self, host, port):
+        """The worker found a dock somewhere new. Saving is the GUI thread's job
+        so settings are only ever written from one thread."""
+        logger.info('Saving discovered dock address %s:%d', host, port)
+        settings.set_device_address(host, port)
+        self.update_device_label(None, '')
+
     def update_device_label(self, ok, message):
         """Footer indicator. ok=None means 'not heard from yet'."""
-        address = f'{settings.device_host()}:{settings.device_port()}'
+        host = settings.device_host()
+        address = f'{host}:{settings.device_port()}' if host else 'no dock set'
         if ok is None:
-            state, text, tooltip = '', f'Contacting {address}', ''
+            text = f'Contacting {address}' if host else 'Searching for a dock...'
+            state, tooltip = '', ''
         elif ok:
             state, text, tooltip = 'ok', f'Connected  ·  {address}', ''
         else:

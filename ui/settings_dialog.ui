@@ -94,6 +94,19 @@
          <number>10</number>
         </property>
         <item>
+         <widget class="QPushButton" name="button_discover">
+          <property name="cursor">
+           <cursorShape>PointingHandCursor</cursorShape>
+          </property>
+          <property name="toolTip">
+           <string>Search the local network for a Mini Dock running this app</string>
+          </property>
+          <property name="text">
+           <string>Discover</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QPushButton" name="button_test">
           <property name="cursor">
            <cursorShape>PointingHandCursor</cursorShape>
@@ -117,6 +130,19 @@
          </spacer>
         </item>
        </layout>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="check_auto_discover">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Searches when no address is set, or when the saved one stops responding</string>
+        </property>
+        <property name="text">
+         <string>Find the dock automatically if it cannot be reached</string>
+        </property>
+       </widget>
       </item>
       <item>
        <widget class="QLabel" name="lbl_test_result">

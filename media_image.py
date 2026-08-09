@@ -40,11 +40,21 @@ def to_rgb565_bytes(image: Image.Image) -> bytes:
 
 
 def resize_thumbnail(thumbnail_bytes, size=FRAME_SIZE_DEFAULT):
-    """Fit artwork to the device frame, letterboxed on black, packed to RGB565."""
+    """Fit artwork to the device frame, letterboxed on black, packed to RGB565.
+
+    Returns (None, 0, 0) when the artwork cannot be decoded. A source is free to
+    hand us something Pillow does not understand, and one bad thumbnail must not
+    take down the whole update - the track's text is still worth showing.
+    """
     if thumbnail_bytes is None:
         return None, 0, 0
-    image = Image.open(BytesIO(thumbnail_bytes))
-    image = image.convert('RGB')
+    try:
+        image = Image.open(BytesIO(thumbnail_bytes))
+        image = image.convert('RGB')
+    except Exception:
+        logger.warning('Could not decode %d bytes of artwork; treating it as none',
+                       len(thumbnail_bytes), exc_info=True)
+        return None, 0, 0
     image.thumbnail(size, Resampling.BICUBIC)
     width, height = image.size
 
@@ -112,6 +122,17 @@ class ArtworkPicker:
         """Best artwork held for that track, if any."""
         return self._best_raw
 
+    @property
+    def best_area(self) -> int:
+        """Pixel area of the held artwork, 0 when there is none."""
+        return self._best_rank[0] if self._best_rank else 0
+
+    def reset(self):
+        """Forget the held artwork - nothing is playing at all."""
+        self._track_key = None
+        self._best_rank = None
+        self._best_raw = None
+
     def best_for(self, track_key, thumbnail_bytes):
         if track_key != self._track_key:
             self._track_key = track_key
@@ -120,8 +141,11 @@ class ArtworkPicker:
 
         rank = thumbnail_rank(thumbnail_bytes)
         if self._best_rank is not None and rank <= self._best_rank:
-            logger.debug('Keeping better artwork %s over incoming %s',
-                         self._best_rank, rank)
+            # Equal ranks land here too, which is deliberate: re-sending the
+            # same artwork would restart the device's scroll animation.
+            how = 'no better than' if rank == self._best_rank else 'worse than'
+            logger.debug('Incoming artwork %s is %s held %s; keeping it',
+                         rank, how, self._best_rank)
             return self._best_raw
 
         self._best_rank = rank

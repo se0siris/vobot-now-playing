@@ -1,6 +1,4 @@
 from ctypes import windll, c_int64
-from multiprocessing import freeze_support
-freeze_support()
 
 import sys
 import os

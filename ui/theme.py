@@ -159,6 +159,23 @@ QPushButton:default {{
     border-color: {ACCENT_DEEP};
 }}
 
+/* Transport controls: square-ish, glyph-only, sized so the three read as a set. */
+#button_previous, #button_play_pause, #button_next {{
+    min-width: 48px;
+    min-height: 34px;
+    padding: 0;
+    font-size: 11pt;
+}}
+
+#button_play_pause {{
+    min-width: 62px;
+    color: {ACCENT};
+}}
+
+#button_play_pause:disabled {{
+    color: {TEXT_MUTED};
+}}
+
 QLineEdit, QSpinBox {{
     background: {ART_EMPTY};
     border: 1px solid {BORDER};
