@@ -5,6 +5,8 @@ VERSION = f"{'.'.join(map(str, VERSION_NUMBER[:3]))} - {VERSION_DATE}"
 APP_NAME = 'Vobot Now Playing'
 ORG_NAME = 'overThere'
 
+# Defaults only - the address in use is stored per-installation via settings.py
+# and changed from the Settings dialog.
 TCP_IP = '192.168.1.26'
 TCP_PORT = 32150
 TCP_TIMEOUT = 5

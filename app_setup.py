@@ -8,6 +8,19 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
+from constants import APP_NAME, ORG_NAME
+
+# Windows labels tray notifications, and groups taskbar buttons, by the
+# process's Application User Model ID. Without one set, both are attributed to
+# whatever launched us - so toasts arrive headed "Python" instead of the app.
+# Must happen before any window is created.
+# https://learn.microsoft.com/en-us/windows/win32/shell/appids
+APP_USER_MODEL_ID = f'{ORG_NAME}.{APP_NAME}'.replace(' ', '')
+try:
+    windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+except (AttributeError, OSError):
+    pass
+
 QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.RoundPreferFloor)
 QApplication.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

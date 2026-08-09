@@ -1,27 +1,21 @@
-import hashlib
-import json
+"""Watches the Windows media session and pushes what it finds to the Mini Dock.
+
+Runs its own asyncio loop on a worker QThread. Everything it learns is handed to
+the UI as signals; the UI never touches WinRT or the socket itself.
+"""
+import asyncio
 import logging
 import time
-import asyncio
 
-from io import BytesIO
+from dataclasses import dataclass
 
 import winrt.windows.media.control as media_control
 import winrt.windows.storage.streams as streams
-import socket
 
-from PIL import Image, ImageChops
-from PIL.Image import Resampling
+from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from PyQt5.QtCore import QObject, pyqtSignal
-
-from constants import (
-    FRAME_SIZE_DEFAULT,
-    PROTOCOL_VERSION,
-    TCP_IP,
-    TCP_PORT,
-    TCP_TIMEOUT,
-)
+from device_link import DeviceLink, probe
+from media_image import ArtworkPicker, FrameCache, art_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -31,30 +25,29 @@ logger = logging.getLogger(__name__)
 # mid-track picks the display back up without waiting for the next song.
 HEARTBEAT_SECONDS = 30
 
+# Events can be missed - a source that dies without a final notification leaves
+# stale text on the dock, and a device that reboots while playback is paused
+# would otherwise wait for the next track. Re-checking on a timer covers both.
+POLL_SECONDS = 10
 
-def to_rgb565_bytes(image: Image.Image) -> bytes:
-    """Pack an image to little-endian RGB565.
 
-    Done with per-band lookup tables rather than a per-pixel Python loop: the
-    loop ran 76,800 iterations per frame, this is a handful of C-speed calls.
+@dataclass(frozen=True)
+class TrackInfo:
+    """A snapshot of what Windows says is playing."""
+    title: str
+    artist: str
+    album: str
+    status: str
+    art_id: str | None = None
+    thumbnail: bytes | None = None
 
-    The two halves of each 16-bit pixel occupy disjoint bit fields, so
-    ImageChops.add doubles as a bitwise OR, and merging as 'LA' interleaves
-    low/high bytes in one pass.
-    """
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
+    @property
+    def is_playing(self) -> bool:
+        return self.status == 'PLAYING'
 
-    red, green, blue = image.split()
-    high = ImageChops.add(
-        red.point(lambda v: v & 0xF8),
-        green.point(lambda v: v >> 5)
-    )
-    low = ImageChops.add(
-        green.point(lambda v: (v & 0x1C) << 3),
-        blue.point(lambda v: v >> 3)
-    )
-    return Image.merge('LA', (low, high)).tobytes()
+    @property
+    def status_text(self) -> str:
+        return self.status.replace('_', ' ').title()
 
 
 async def get_thumbnail_data(thumbnail):
@@ -85,265 +78,230 @@ async def get_thumbnail_data(thumbnail):
     return bytes_data
 
 
-def resize_thumbnail(thumbnail_bytes, size=FRAME_SIZE_DEFAULT):
-    if thumbnail_bytes is None:
-        return None, 0, 0
-    image = Image.open(BytesIO(thumbnail_bytes))
-    image = image.convert('RGB')
-    image.thumbnail(size, Resampling.BICUBIC)
-    width, height = image.size
-
-    # Add padding on a black background if needed
-    if width < size[0] or height < size[1]:
-        new_image = Image.new('RGB', size, (0, 0, 0))
-        new_image.paste(image, ((size[0] - width) // 2, (size[1] - height) // 2))
-        image = new_image
-
-        width = size[0]
-        height = size[1]
-
-    thumb_bytes = to_rgb565_bytes(image)
-    logger.debug('Resized thumbnail to %dx%d, %d bytes (RGB565)', width, height, len(thumb_bytes))
-    return thumb_bytes, width, height
-
-
-def art_id_for(thumbnail_bytes) -> str | None:
-    """Stable id for a piece of artwork, derived from the raw thumbnail."""
-    if not thumbnail_bytes:
-        return None
-    return hashlib.sha1(thumbnail_bytes).hexdigest()[:16]
-
-
-def thumbnail_rank(thumbnail_bytes) -> tuple[int, int]:
-    """How good a thumbnail is: (pixel area, byte length), bigger is better.
-
-    PIL only parses the header here, so this does not decode the image.
-    """
-    if not thumbnail_bytes:
-        return 0, 0
-    try:
-        with Image.open(BytesIO(thumbnail_bytes)) as image:
-            width, height = image.size
-    except Exception:
-        width = height = 0
-    return width * height, len(thumbnail_bytes)
-
-
-class DeviceLink:
-    """Talks the Now Playing wire protocol to the Mini Dock.
-
-    Holds the last artwork the device acknowledged so unchanged album art is not
-    re-sent. That matters because playback_info_changed fires on every play,
-    pause and seek - previously each one pushed a fresh 150KB frame.
-    """
-
-    def __init__(self, host: str = TCP_IP, port: int = TCP_PORT):
-        self.host = host
-        self.port = port
-        self.frame_size = FRAME_SIZE_DEFAULT
-        self._device_art_id: str | None = None
-
-    def _read_ack(self, sock: socket.socket, buffer: bytearray) -> dict:
-        """Read one newline-terminated JSON object, keeping any trailing bytes."""
-        while b'\n' not in buffer:
-            chunk = sock.recv(1024)
-            if not chunk:
-                raise ConnectionError('Device closed the connection')
-            buffer += chunk
-        line, _, rest = bytes(buffer).partition(b'\n')
-        buffer[:] = rest
-        return json.loads(line.decode('utf-8'))
-
-    def send(self, meta: dict, image_bytes: bytes | None) -> bool:
-        art_id = meta.get('art_id')
-        header = dict(meta)
-        header['proto'] = PROTOCOL_VERSION
-        header['image_len'] = len(image_bytes) if image_bytes else 0
-
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(TCP_TIMEOUT)
-                sock.connect((self.host, self.port))
-
-                sock.sendall(json.dumps(header).encode('utf-8') + b'\n')
-                buffer = bytearray()
-                ack = self._read_ack(sock, buffer)
-                logger.debug('Device ack: %s', ack)
-
-                # Adopt whatever geometry the device reports so a panel that is
-                # not 320x240 still gets correctly sized frames next time.
-                width, height = ack.get('w'), ack.get('h')
-                if width and height and (width, height) != self.frame_size:
-                    logger.info('Device frame size is %dx%d', width, height)
-                    self.frame_size = (width, height)
-                    self._device_art_id = None
-
-                if not ack.get('ok', False):
-                    logger.warning('Device rejected update: %s', ack.get('error'))
-                    self._device_art_id = None
-                    return False
-
-                if ack.get('send_art'):
-                    if not image_bytes:
-                        logger.warning('Device asked for artwork we do not have')
-                        self._device_art_id = None
-                        return False
-                    sock.sendall(image_bytes)
-                    final = self._read_ack(sock, buffer)
-                    if not final.get('ok', False):
-                        logger.warning('Device rejected artwork: %s', final.get('error'))
-                        self._device_art_id = None
-                        return False
-                    logger.debug('Sent %d bytes of artwork', len(image_bytes))
-
-                # Device is now known to hold this artwork (or none at all).
-                self._device_art_id = art_id
-                return True
-        except Exception as exc:
-            # Force a full resend once the device is reachable again.
-            self._device_art_id = None
-            logger.warning('Send to %s:%d failed: %s', self.host, self.port, exc)
-            return False
-
-
 class NotificationsWrapper(QObject):
+    """Media session monitor. Lives on a worker thread, owns the DeviceLink."""
 
-    # Signals.
-    signal_thumb_bytes = pyqtSignal(bytes)
+    # Emitted with a TrackInfo, or None when nothing is playing.
+    signal_track = pyqtSignal(object)
+    # Emitted after every push attempt: (reachable, message).
+    signal_device_state = pyqtSignal(bool, str)
 
     def __init__(self, parent=None):
         super(NotificationsWrapper, self).__init__(parent)
         self.device = DeviceLink()
-        # Encoded frame cache, so re-sending after a device restart does not
-        # re-run the resize/pack work.
-        self._cached_art_id: str | None = None
-        self._cached_frame: bytes | None = None
-        self._cached_size: tuple[int, int] = (0, 0)
-        # Best artwork seen for the track currently playing. Windows republishes
-        # the thumbnail several times per track and the versions are not equally
-        # good - see _best_thumbnail().
-        self._track_key: tuple | None = None
-        self._best_rank: tuple[int, int] | None = None
-        self._best_raw: bytes | None = None
+        self._artwork = ArtworkPicker()
+        self._frames = FrameCache()
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop_event: asyncio.Event | None = None
+        # An address change that arrived before the loop was up.
+        self._pending_address: tuple[str, int] | None = None
+
+        # The manager has to outlive main(): dropping it unsubscribes us from
+        # the session-changed event.
+        self._manager = None
+        self._session = None
+        self._session_tokens: tuple | None = None
+
         self._last_sent_key: tuple | None = None
         self._last_sent_at: float = 0.0
+        self._last_device_ok: bool | None = None
 
+    # -- Lifecycle ---------------------------------------------------------
+
+    @pyqtSlot()
     def start(self):
         logger.debug('NotificationsWrapper starting...')
-        asyncio.run(self.main())
+        try:
+            asyncio.run(self.main())
+        except Exception:
+            logger.exception('Media monitor stopped unexpectedly')
+        logger.debug('NotificationsWrapper stopped.')
 
-    async def handle_media_properties_changed(self, session, args):
-        await self.get_now_playing(session)
+    # start() blocks this thread inside asyncio.run, so its Qt event loop never
+    # gets to run. The two methods below are therefore called directly from the
+    # GUI thread rather than through queued signals, and hand the work over via
+    # call_soon_threadsafe - the only cross-thread entry point asyncio offers.
 
-    async def handle_playback_info_changed(self, session, args):
-        await self.get_now_playing(session)
+    def stop(self):
+        """Ask the worker loop to finish. Safe to call from the GUI thread."""
+        loop, stop_event = self._loop, self._stop_event
+        if loop is None or stop_event is None:
+            return
+        loop.call_soon_threadsafe(stop_event.set)
+
+    def set_device_address(self, host: str, port: int):
+        """Retarget the device. Safe to call from the GUI thread."""
+        loop = self._loop
+        if loop is None:
+            # Settings changed before the monitor finished starting; main()
+            # picks this up rather than losing it.
+            self._pending_address = (host, port)
+            return
+        loop.call_soon_threadsafe(self._apply_device_address, host, port)
+
+    def _apply_device_address(self, host: str, port: int):
+        self.device.set_address(host, port)
+        # Forget the dedupe state and the cached device status so the new device
+        # gets a full push and the UI hears about it either way.
+        self._last_sent_key = None
+        self._last_device_ok = None
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        asyncio.create_task(self.get_now_playing())
 
     async def main(self):
         logger.debug('NotificationsWrapper started.')
-        sessions = await media_control.GlobalSystemMediaTransportControlsSessionManager.request_async()
-        session = sessions.get_current_session()
-        if not session:
+        self._loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
+
+        if self._pending_address is not None:
+            host, port = self._pending_address
+            self._pending_address = None
+            self.device.set_address(host, port)
+
+        self._manager = await media_control.GlobalSystemMediaTransportControlsSessionManager.request_async()
+        self._manager.add_current_session_changed(self._on_current_session_changed)
+
+        self._bind_session(self._manager.get_current_session())
+        await self.get_now_playing()
+        logger.info('Listening for media session changes.')
+
+        # Wake on stop, otherwise re-check on the poll interval.
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=POLL_SECONDS)
+            except asyncio.TimeoutError:
+                await self.get_now_playing(poll=True)
+
+        self._bind_session(None)
+        logger.info('Stopped listening.')
+
+    # -- Session plumbing --------------------------------------------------
+
+    def _bind_session(self, session):
+        """Attach change handlers to the current session, detaching the old one."""
+        if self._session is not None and self._session_tokens is not None:
+            properties_token, playback_token = self._session_tokens
+            try:
+                self._session.remove_media_properties_changed(properties_token)
+                self._session.remove_playback_info_changed(playback_token)
+            except Exception:
+                # The old session may already be gone; nothing to unhook.
+                logger.debug('Could not detach from the previous session', exc_info=True)
+
+        self._session = session
+        self._session_tokens = None
+
+        if session is None:
             logger.info('No active media session.')
             return
 
+        self._session_tokens = (
+            session.add_media_properties_changed(self._on_session_event),
+            session.add_playback_info_changed(self._on_session_event),
+        )
+        logger.debug('Bound to media session %s', session.source_app_user_model_id)
+
+    def _on_current_session_changed(self, sender, args):
+        """The user switched player, or the last one closed."""
+        loop = self._loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._handle_session_change)
+
+    def _handle_session_change(self):
+        if self._manager is None:
+            return
+        self._bind_session(self._manager.get_current_session())
+        # A new source means the old artwork and dedupe state are meaningless.
+        self._last_sent_key = None
+        asyncio.create_task(self.get_now_playing())
+
+    def _on_session_event(self, sender, args):
+        """WinRT calls this on a pool thread - hop back onto our loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._schedule_refresh)
+
+    # -- Reporting ---------------------------------------------------------
+
+    async def _check_device(self):
+        """Reachability check, run off the loop so a timeout cannot stall it."""
         loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None, probe, self.device.host, self.device.port)
+        self._report_device(result)
 
-        def on_media_properties_changed(sender, args):
-            loop.call_soon_threadsafe(asyncio.create_task, self.handle_media_properties_changed(sender, args))
+    def _report_device(self, result):
+        """Emit device state, but only when it actually changes."""
+        ok = bool(result)
+        message = '' if ok else (result.error or 'Not connected')
+        if ok == self._last_device_ok:
+            return
+        self._last_device_ok = ok
+        self.signal_device_state.emit(ok, message)
 
-        def on_playback_info_changed(sender, args):
-            loop.call_soon_threadsafe(asyncio.create_task, self.handle_playback_info_changed(sender, args))
-
-        session.add_media_properties_changed(on_media_properties_changed)
-        session.add_playback_info_changed(on_playback_info_changed)
-        await self.get_now_playing(session)
-        logger.info('Listening for media property and playback info changes. Press Ctrl+C to exit.')
+    async def get_now_playing(self, poll: bool = False):
+        """Read the session and push it to the device if anything changed."""
         try:
-            while True:
-                await asyncio.sleep(3600)
-        except KeyboardInterrupt:
-            logger.info('\nStopped listening.')
+            session = self._session
+            if session is None and self._manager is not None:
+                session = self._manager.get_current_session()
+                if session is not None:
+                    self._bind_session(session)
 
-    def _best_thumbnail(self, track_key, thumb_bytes):
-        """Pick the best artwork seen so far for this track.
-
-        A single track produces several media_properties_changed events, and the
-        thumbnail attached to them is not always the album art - sources also
-        publish a small placeholder (typically the player's own icon, identical
-        across every track). Whichever arrived last used to win, so good art was
-        replaced by the placeholder a few seconds in.
-
-        Ranking by pixel area handles either arrival order, and only ever
-        upgrades within a track, so it does not churn the device.
-        """
-        if track_key != self._track_key:
-            self._track_key = track_key
-            self._best_rank = None
-            self._best_raw = None
-
-        rank = thumbnail_rank(thumb_bytes)
-        if self._best_rank is not None and rank <= self._best_rank:
-            logger.debug('Keeping better artwork %s over incoming %s',
-                         self._best_rank, rank)
-            return self._best_raw
-
-        self._best_rank = rank
-        self._best_raw = thumb_bytes
-        return thumb_bytes
-
-    def _frame_for(self, thumb_bytes, art_id):
-        """Encoded RGB565 frame for this artwork, reusing the cache when possible."""
-        target = self.device.frame_size
-        if (art_id == self._cached_art_id
-                and self._cached_frame is not None
-                and self._cached_size == target):
-            return self._cached_frame, target[0], target[1]
-
-        frame, width, height = resize_thumbnail(thumb_bytes, target)
-        self._cached_art_id = art_id
-        self._cached_frame = frame
-        self._cached_size = (width, height)
-        return frame, width, height
-
-    async def get_now_playing(self, session=None):
-        try:
             if session is None:
-                sessions = await media_control.GlobalSystemMediaTransportControlsSessionManager.request_async()
-                session = sessions.get_current_session()
-
-            if not session:
-                logger.info('No active media session.')
+                self.signal_track.emit(None)
+                # Nothing to push, so the only way to keep the connection
+                # indicator honest is to ask the device directly.
+                await self._check_device()
                 return
 
             media_props = await session.try_get_media_properties_async()
             playback_info = session.get_playback_info()
             status = playback_info.playback_status
 
-            thumb_bytes = await get_thumbnail_data(media_props.thumbnail)
+            title = media_props.title or ''
+            artist = media_props.artist or ''
+            album = media_props.album_title or ''
+            track_key = (title, artist, album)
 
-            track_key = (media_props.title, media_props.artist,
-                         media_props.album_title)
-            if thumb_bytes:
-                thumb_bytes = self._best_thumbnail(track_key, thumb_bytes)
+            # A poll tick re-reads the metadata cheaply, but re-reading the
+            # thumbnail stream every 10 seconds is pure waste when the track has
+            # not moved on.
+            if poll and self._artwork.key == track_key and self._artwork.current:
+                thumb_bytes = self._artwork.current
+            else:
+                raw_thumb = await get_thumbnail_data(media_props.thumbnail)
+                thumb_bytes = self._artwork.best_for(track_key, raw_thumb) if raw_thumb else None
 
             art_id = art_id_for(thumb_bytes)
 
             if thumb_bytes:
-                self.signal_thumb_bytes.emit(thumb_bytes)
-                frame_bytes, width, height = self._frame_for(thumb_bytes, art_id)
+                frame_bytes, width, height = self._frames.frame_for(
+                    thumb_bytes, art_id, self.device.frame_size)
             else:
                 logger.debug('No thumbnail available.')
                 frame_bytes, width, height = None, 0, 0
-                self._cached_art_id = None
-                self._cached_frame = None
+                self._frames.clear()
 
-            logger.info('--- Now Playing ---')
+            self.signal_track.emit(TrackInfo(
+                title=title,
+                artist=artist,
+                album=album,
+                status=status.name,
+                art_id=art_id,
+                thumbnail=thumb_bytes,
+            ))
 
             now_playing_data = {
                 'status': status.name,
-                'title': media_props.title,
-                'artist': media_props.artist,
-                'album': media_props.album_title,
+                'title': title,
+                'artist': artist,
+                'album': album,
                 'art_id': art_id,
                 'width': width,
                 'height': height,
@@ -351,21 +309,22 @@ class NotificationsWrapper(QObject):
             # Skip pushes that carry nothing new. Beyond saving the round trip,
             # it keeps the device from re-applying identical text to a label
             # that is mid-scroll.
-            payload_key = (status.name, media_props.title, media_props.artist,
-                           media_props.album_title, art_id)
+            payload_key = (status.name, title, artist, album, art_id)
             now = time.monotonic()
             if (payload_key == self._last_sent_key
                     and now - self._last_sent_at < HEARTBEAT_SECONDS):
                 logger.debug('No change since last push; skipping')
                 return
 
-            logger.info(now_playing_data)
-            if self.device.send(now_playing_data, frame_bytes):
+            logger.info('Now playing: %s', now_playing_data)
+            result = self.device.send(now_playing_data, frame_bytes)
+            if result:
                 self._last_sent_key = payload_key
                 self._last_sent_at = now
             else:
                 # Retry on the next event rather than waiting for a change.
                 self._last_sent_key = None
+            self._report_device(result)
 
-        except Exception as e:
-            logger.info(f'Error: {e}')
+        except Exception:
+            logger.exception('Failed to read or push the current media session')

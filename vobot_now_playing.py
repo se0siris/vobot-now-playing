@@ -12,9 +12,16 @@ import traceback
 from app_setup import app
 
 from PyQt5.QtCore import QThread
+from PyQt5.QtGui import QIcon
+from PyQt5.QtWidgets import QMessageBox
 
+import settings
+import single_instance
+
+from paths import APP_ICON
 from ui.mainwindow import MainWindow
-from ui.message_boxes import message_box_error
+from ui.message_boxes import message_box_error, message_box_ok
+from ui.theme import apply_theme
 
 from constants import VERSION, APP_NAME, ORG_NAME
 
@@ -81,6 +88,9 @@ if __name__ == "__main__":
     logger.info(f'AppVersion: {app.applicationVersion()}')
     logger.info(f'Company Name: {app.organizationName()}')
 
+    # Needs the names above, since they decide the settings folder.
+    settings.init()
+
     # Error handling stuff.
     sys.excepthook = except_hook
 
@@ -89,7 +99,27 @@ if __name__ == "__main__":
 
     logger.info('Main Thread ID: %d', int(QThread.currentThreadId()))
 
+    # Theme and icon before the first window exists, so nothing flashes unstyled.
+    app.setWindowIcon(QIcon(APP_ICON))
+    apply_theme(app)
+
+    # The dock handles one client at a time and refuses overlapping pushes, so a
+    # second copy would only fight this one for it.
+    existing_pid = single_instance.claim()
+    if existing_pid is not None:
+        logger.warning('Already running (pid %s); exiting.', existing_pid or 'unknown')
+        message_box_ok(
+            f'{APP_NAME} is already running.',
+            'Look for it in the notification area, next to the clock. Only one copy '
+            'can talk to the Mini Dock at a time.',
+            icon=QMessageBox.Information,
+        )
+        sys.exit(0)
+
     ui = MainWindow()
-    ui.show()
+    if settings.start_minimized() and ui.tray_icon is not None:
+        logger.info('Starting hidden in the notification area.')
+    else:
+        ui.show()
 
     sys.exit(app.exec_())
