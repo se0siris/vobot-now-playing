@@ -47,7 +47,11 @@ def discover(timeout: float = DEFAULT_TIMEOUT) -> list[Device]:
 
     Blocking - call it off the GUI thread.
     """
-    bound = _broadcast_sockets()
+    # Resolved once and threaded through: it is a host name lookup, and both the
+    # sockets and the reply preference are derived from it.
+    local_addresses = _local_addresses()
+
+    bound = _broadcast_sockets(local_addresses)
     if not bound:
         logger.warning('No usable network interface to search from')
         return []
@@ -64,7 +68,7 @@ def discover(timeout: float = DEFAULT_TIMEOUT) -> list[Device]:
                                  address, target, exc)
 
         found: dict[str, Device] = {}
-        local_prefixes = _local_prefixes()
+        local_prefixes = {_subnet(address) for address in local_addresses}
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -123,14 +127,14 @@ def _parse_reply(data: bytes, addr) -> Device | None:
     )
 
 
-def _broadcast_sockets() -> list[tuple[socket.socket, str]]:
+def _broadcast_sockets(local_addresses) -> list[tuple[socket.socket, str]]:
     """One socket per local address, paired with the address it is bound to.
 
     Binding to 0.0.0.0 alone sends only from whichever route the stack picks,
     which misses the dock when a VPN or a second NIC owns the default route.
     """
     sockets = []
-    for address in _local_addresses():
+    for address in local_addresses:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -195,11 +199,12 @@ def _preferred(existing: Device | None, candidate: Device,
 
 
 def _in_local_subnet(host: str, local_prefixes: set[str]) -> bool:
-    return '.'.join(host.split('.')[:3]) in local_prefixes
+    return _subnet(host) in local_prefixes
 
 
-def _local_prefixes() -> set[str]:
-    return {'.'.join(address.split('.')[:3]) for address in _local_addresses()}
+def _subnet(address: str) -> str:
+    """The /24 an address belongs to. See _targets_for() on assuming /24."""
+    return '.'.join(address.split('.')[:3])
 
 
 def _sort_key(host: str):

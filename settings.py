@@ -95,8 +95,13 @@ def set_device_address(host: str, port: int) -> None:
     settings.setValue(KEY_PORT, int(port))
 
 
+def _bool_setting(key: str) -> bool:
+    """Read a stored flag, falling back to its default from DEFAULTS."""
+    return _to_bool(_settings().value(key, DEFAULTS[key]))
+
+
 def auto_discover() -> bool:
-    return _to_bool(_settings().value(KEY_AUTO_DISCOVER, DEFAULTS[KEY_AUTO_DISCOVER]))
+    return _bool_setting(KEY_AUTO_DISCOVER)
 
 
 def set_auto_discover(enabled: bool) -> None:
@@ -104,8 +109,7 @@ def set_auto_discover(enabled: bool) -> None:
 
 
 def close_to_tray() -> bool:
-    # An INI file stores bools as the strings 'true'/'false'.
-    return _to_bool(_settings().value(KEY_CLOSE_TO_TRAY, DEFAULTS[KEY_CLOSE_TO_TRAY]))
+    return _bool_setting(KEY_CLOSE_TO_TRAY)
 
 
 def set_close_to_tray(enabled: bool) -> None:
@@ -113,7 +117,7 @@ def set_close_to_tray(enabled: bool) -> None:
 
 
 def start_minimized() -> bool:
-    return _to_bool(_settings().value(KEY_START_MINIMIZED, DEFAULTS[KEY_START_MINIMIZED]))
+    return _bool_setting(KEY_START_MINIMIZED)
 
 
 def set_start_minimized(enabled: bool) -> None:
@@ -129,6 +133,7 @@ def set_geometry(value) -> None:
 
 
 def _to_bool(value) -> bool:
+    # An INI file stores bools as the strings 'true'/'false'.
     if isinstance(value, bool):
         return value
     return str(value).lower() in ('true', '1', 'yes')

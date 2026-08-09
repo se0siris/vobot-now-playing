@@ -112,7 +112,8 @@ a = Analysis(
 #
 # Two image format plugins have to survive this list:
 #   qico  - QIcon loads resources/app_icon.ico for the window and tray. Without
-#           it the icon is null, and a null tray icon is an *invisible* one.
+#           it the icon yields no pixmap, and Windows then draws no tray icon at
+#           all - not a blank one - leaving no way to quit but Task Manager.
 #   qjpeg - MainWindow.set_artwork() previews the raw thumbnail with
 #           QPixmap.loadFromData(), and those are commonly JPEG. (PNG is built
 #           into QtGui, so it needs no plugin.)

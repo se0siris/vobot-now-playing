@@ -7,51 +7,41 @@ from PyQt5.QtWidgets import QDialog, QApplication, QInputDialog
 import discovery
 import settings
 
-from device_link import explain_socket_error, probe
+from device_link import SendResult, explain_socket_error, probe
 from ui.Ui_settings_dialog import Ui_SettingsDialog
 from ui.theme import restyle, use_dark_titlebar
 
 logger = logging.getLogger(__name__)
 
 
-class _ProbeSignals(QObject):
-    finished = pyqtSignal(bool, str)
-
-
-class _ProbeTask(QRunnable):
-    """Reachability check on a pool thread, so the dialog stays responsive."""
-
-    def __init__(self, host: str, port: int):
-        super(_ProbeTask, self).__init__()
-        self.host = host
-        self.port = port
-        self.signals = _ProbeSignals()
-
-    @pyqtSlot()
-    def run(self):
-        result = probe(self.host, self.port)
-        self.signals.finished.emit(bool(result), result.error or '')
-
-
-class _DiscoverySignals(QObject):
+class _TaskSignals(QObject):
+    # object rather than a typed signature, so one task class serves any call.
     finished = pyqtSignal(object)
 
 
-class _DiscoveryTask(QRunnable):
-    """Network search on a pool thread - it blocks for a second or more."""
+class _Task(QRunnable):
+    """Run a blocking call on a pool thread, keeping the dialog responsive.
 
-    def __init__(self):
-        super(_DiscoveryTask, self).__init__()
-        self.signals = _DiscoverySignals()
+    Both things this dialog does off-thread - the reachability probe and the
+    network search - are 'call a function, hand the result back', so they share
+    one runnable rather than a class each.
+    """
+
+    def __init__(self, work, *args, default=None):
+        super(_Task, self).__init__()
+        self._work = work
+        self._args = args
+        self._default = default
+        self.signals = _TaskSignals()
 
     @pyqtSlot()
     def run(self):
         try:
-            devices = discovery.discover()
+            result = self._work(*self._args)
         except Exception:
-            logger.exception('Discovery failed')
-            devices = []
-        self.signals.finished.emit(devices)
+            logger.exception('%s failed', getattr(self._work, '__name__', 'Task'))
+            result = self._default
+        self.signals.finished.emit(result)
 
 
 class SettingsDialog(QDialog, Ui_SettingsDialog):
@@ -101,7 +91,8 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.button_test.setEnabled(False)
         self._set_test_result('Checking...', None)
 
-        task = _ProbeTask(self.host, self.port)
+        task = _Task(probe, self.host, self.port,
+                     default=SendResult(False, 'Check failed'))
         task.signals.finished.connect(self.on_probe_finished)
         self._pool.start(task)
 
@@ -110,7 +101,7 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.button_test.setEnabled(False)
         self._set_test_result('Searching the network...', None)
 
-        task = _DiscoveryTask()
+        task = _Task(discovery.discover, default=[])
         task.signals.finished.connect(self.on_discovery_finished)
         self._pool.start(task)
 
@@ -147,13 +138,14 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
             return None
         return devices[labels.index(choice)]
 
-    @pyqtSlot(bool, str)
-    def on_probe_finished(self, ok: bool, error: str):
+    @pyqtSlot(object)
+    def on_probe_finished(self, result):
         self.button_test.setEnabled(True)
-        if ok:
+        if result:
             self._set_test_result('Device is listening.', 'ok')
         else:
-            self._set_test_result(explain_socket_error(error or 'No response.'), 'error')
+            self._set_test_result(
+                explain_socket_error(result.error or 'No response.'), 'error')
 
     def accept(self):
         # An empty address is allowed only when something will go and find one.

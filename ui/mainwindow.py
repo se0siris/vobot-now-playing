@@ -33,8 +33,9 @@ STATUS_GLYPHS = {
     'STOPPED': '■',        # filled square
 }
 
-PLAY_GLYPH = '▶'
-PAUSE_GLYPH = '▮▮'
+# The transport button reuses the status glyphs, so the two can never drift.
+PLAY_GLYPH = STATUS_GLYPHS['PLAYING']
+PAUSE_GLYPH = STATUS_GLYPHS['PAUSED']
 
 
 def rounded_pixmap(pixmap: QPixmap, size: int, radius: int, device_pixel_ratio: float = 1.0) -> QPixmap:

@@ -70,15 +70,6 @@ def except_hook(cls, exception, tb):
     sys.__excepthook__(cls, exception, tb)
 
 
-def is_remote_session():
-    try:
-        import win32api
-    except ImportError:
-        return False
-    return bool(win32api.GetSystemMetrics(0x1000))
-
-
-
 if __name__ == "__main__":
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(VERSION)
@@ -93,9 +84,6 @@ if __name__ == "__main__":
 
     # Error handling stuff.
     sys.excepthook = except_hook
-
-    # Store whether we're using RDP for disabling some graphics.
-    app.is_remote_session = is_remote_session()
 
     logger.info('Main Thread ID: %d', int(QThread.currentThreadId()))
 
