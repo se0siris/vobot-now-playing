@@ -1,0 +1,88 @@
+name: Create Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  # Build without minting a tag. Everything up to the zip runs; only the
+  # release step is tag-gated, so a dispatch run leaves nothing to clean up.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SPEC_FILE: pyinstaller.spec
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # setup-uv stopped publishing floating major tags at v8, so this must be
+      # an exact version - `@v9` does not resolve.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Sync dependencies
+        run: uv sync --locked --all-extras --dev
+
+      # The tag and constants.VERSION_NUMBER are independent values, and the
+      # exe is stamped from the latter. Catch the mismatch here rather than
+      # shipping a v1.2.0 release whose properties dialog claims 1.0.0.
+      - name: Check tag matches VERSION_NUMBER
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $expected = uv run python -c "from constants import VERSION_NUMBER; print('.'.join(map(str, VERSION_NUMBER[:3])))"
+          $tag = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($tag -ne $expected) {
+            Write-Host "::error::Tag $env:GITHUB_REF_NAME does not match constants.VERSION_NUMBER ($expected). Update constants.py or retag."
+            exit 1
+          }
+          Write-Host "Tag $env:GITHUB_REF_NAME matches constants.VERSION_NUMBER ($expected)."
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller ${{ env.SPEC_FILE }} --noconfirm --clean
+
+      - name: Zip onedir output
+        shell: pwsh
+        run: |
+          $app = (Get-ChildItem dist -Directory | Select-Object -First 1).Name
+          if (-not $app) { throw "PyInstaller produced no folder under dist/." }
+          # GitHub rewrites spaces in asset names to dots, so slug the app name
+          # rather than let it pick the separator.
+          $slug = ($app.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+          $zip = "$slug-$env:GITHUB_REF_NAME-windows-x64.zip"
+          Compress-Archive -Path "dist/$app" -DestinationPath $zip
+          "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # archive: false uploads the zip as-is instead of wrapping it in a second
+      # zip. Single file only, and the artifact takes the file's own name, so
+      # `name` is deliberately omitted - it would be ignored.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.ZIP_NAME }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            "$env:ZIP_NAME" `
+            --title $env:GITHUB_REF_NAME `
+            --draft `
+            --generate-notes
