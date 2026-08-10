@@ -164,12 +164,15 @@ class NotificationsWrapper(QObject):
         # One refresh at a time; see _schedule_refresh().
         self._refresh_task: asyncio.Task | None = None
         self._refresh_wanted = False
+        self._refresh_poll = False
         # An address change that arrived before the loop was up.
         self._pending_address: tuple[str, int] | None = None
 
-        # The manager has to outlive main(): dropping it unsubscribes us from
-        # the session-changed event.
+        # The manager has to be held for as long as we are listening: letting
+        # it go unsubscribes us from the session-changed event. main() releases
+        # it deliberately on the way out, via _unbind_manager().
         self._manager = None
+        self._manager_token = None
         self._session = None
         self._session_tokens: tuple | None = None
 
@@ -246,7 +249,7 @@ class NotificationsWrapper(QObject):
         self._last_device_ok = None
         self._schedule_refresh()
 
-    def _schedule_refresh(self):
+    def _schedule_refresh(self, poll: bool = False):
         """Ask for a refresh, collapsing a burst of events into one.
 
         A single track change raises a handful of WinRT events in the same
@@ -254,7 +257,20 @@ class NotificationsWrapper(QObject):
         the same thumbnail stream for one change. Now a refresh already running
         just sets a flag, and runs exactly once more when it finishes, so the
         last state is never missed but the middle of a burst is not fetched.
+
+        Every refresh goes through here, the poll included. get_now_playing()
+        awaits twice on cross-process calls, so two runs overlapping would
+        interleave on the artwork and dedupe state - and the loser would write
+        back the metadata it read before the track changed.
         """
+        # A handler can still fire while the loop is winding down; starting a
+        # push from there would only race the teardown.
+        if self._stop_event is not None and self._stop_event.is_set():
+            return
+
+        # An event refresh outranks a poll: a poll may reuse the artwork
+        # already held, an event may not, so a poll must not downgrade one.
+        self._refresh_poll = poll and (self._refresh_poll or not self._refresh_wanted)
         self._refresh_wanted = True
         if self._refresh_task is not None and not self._refresh_task.done():
             return
@@ -263,7 +279,20 @@ class NotificationsWrapper(QObject):
     async def _refresh_until_settled(self):
         while self._refresh_wanted:
             self._refresh_wanted = False
-            await self.get_now_playing()
+            poll, self._refresh_poll = self._refresh_poll, False
+            await self.get_now_playing(poll=poll)
+
+    async def _cancel_refresh(self):
+        """Drop any refresh still in flight, so nothing pushes as we tear down."""
+        task, self._refresh_task = self._refresh_task, None
+        self._refresh_wanted = False
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def main(self):
         logger.debug('NotificationsWrapper started.')
@@ -276,10 +305,11 @@ class NotificationsWrapper(QObject):
             self.device.set_address(host, port)
 
         self._manager = await media_control.GlobalSystemMediaTransportControlsSessionManager.request_async()
-        self._manager.add_current_session_changed(self._on_current_session_changed)
+        self._manager_token = self._manager.add_current_session_changed(
+            self._on_current_session_changed)
 
         self._bind_session(self._manager.get_current_session())
-        await self.get_now_playing()
+        self._schedule_refresh()
         logger.info('Listening for media session changes.')
 
         # Wake on stop, otherwise re-check on the poll interval.
@@ -287,12 +317,40 @@ class NotificationsWrapper(QObject):
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=POLL_SECONDS)
             except asyncio.TimeoutError:
-                await self.get_now_playing(poll=True)
+                self._schedule_refresh(poll=True)
 
+        # Detach before cancelling: a handler that fired in between would
+        # otherwise queue a refresh onto a loop that is about to close.
         self._bind_session(None)
+        self._unbind_manager()
+        await self._cancel_refresh()
         logger.info('Stopped listening.')
 
     # -- Session plumbing --------------------------------------------------
+
+    def _unbind_manager(self):
+        """Let go of the session manager and its subscription.
+
+        Left attached, WinRT keeps a delegate into this process alive until it
+        exits, and can call it while the loop is already closing.
+
+        This does not silence the "Exception ignored in
+        _DeleteDummyThreadOnDel.__del__" pair sometimes printed on exit. That
+        comes from the Thread objects CPython fabricates for the Windows
+        thread-pool threads WinRT calls back on: they stay registered until
+        those threads die, which is never, so they are collected during
+        interpreter finalization after threading's own globals have gone. The
+        message is harmless and not ours to fix - but unhooking is still right.
+        """
+        manager, token = self._manager, self._manager_token
+        self._manager = None
+        self._manager_token = None
+        if manager is None or token is None:
+            return
+        try:
+            manager.remove_current_session_changed(token)
+        except Exception:
+            logger.debug('Could not detach from the session manager', exc_info=True)
 
     def _bind_session(self, session):
         """Attach change handlers to the current session, detaching the old one."""
@@ -449,14 +507,29 @@ class NotificationsWrapper(QObject):
             # cross-process stream read - worth skipping once we hold artwork
             # good enough to fill the panel. Until then keep looking, because a
             # better version often turns up shortly after the first.
+            #
+            # settled matters as much as the size: a single read is not proof
+            # the thumbnail belongs to the title beside it, and stopping on the
+            # strength of one would strand the previous track's cover here for
+            # the rest of the song. See ArtworkPicker.
             holding_good_art = (self._artwork.key == track_key
-                                and self._artwork.current
+                                and self._artwork.settled
                                 and self._artwork.best_area >= GOOD_ART_AREA)
             if poll and holding_good_art:
                 thumb_bytes = self._artwork.current
             else:
                 raw_thumb = await get_thumbnail_data(media_props.thumbnail)
-                thumb_bytes = self._artwork.best_for(track_key, raw_thumb) if raw_thumb else None
+                if raw_thumb:
+                    thumb_bytes = self._artwork.best_for(track_key, raw_thumb)
+                elif self._artwork.key == track_key:
+                    # An empty read is not the same as a track with no artwork:
+                    # the stream comes from the source app and can fail on its
+                    # own. Blanking the dock and restoring it a poll later is a
+                    # flicker, so keep what we hold for this same track.
+                    logger.debug('Empty thumbnail read; keeping the artwork held')
+                    thumb_bytes = self._artwork.current
+                else:
+                    thumb_bytes = None
 
             art_id = art_id_for(thumb_bytes)
 
