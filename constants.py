@@ -1,9 +1,20 @@
 VERSION_NUMBER = (1, 0, 0, 0)
-VERSION_DATE = '09/08/2026'
+VERSION_DATE = '10/08/2026'
 VERSION = f"{'.'.join(map(str, VERSION_NUMBER[:3]))} - {VERSION_DATE}"
 
 APP_NAME = 'Vobot Now Playing'
 ORG_NAME = 'overThere'
+
+# Identity shown in the About dialog. AUTHOR is the copyright holder, which is
+# not the same thing as ORG_NAME above - that one only names the settings folder
+# and the exe's CompanyName field.
+AUTHOR = 'Gary Hughes'
+COPYRIGHT_YEAR = 2026
+REPO_URL = 'https://github.com/se0siris/vobot-now-playing'
+# PyQt5 is GPL v3, so the bundled client can only be distributed under GPL v3
+# terms. This is a consequence of the dependency, not a preference.
+LICENSE_NAME = 'GNU General Public License v3'
+LICENSE_URL = 'https://www.gnu.org/licenses/gpl-3.0.html'
 
 # Defaults only - the address in use is stored per-installation via settings.py
 # and changed from the Settings dialog.

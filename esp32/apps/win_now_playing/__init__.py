@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Gary Hughes
+#
+# MIT, not the GPLv3 covering the Windows client at the root of this repository.
+# See esp32/LICENSE.
 """Windows Now Playing - Mini Dock app.
 
 Listens on TCP for a push from the companion Windows client and displays the

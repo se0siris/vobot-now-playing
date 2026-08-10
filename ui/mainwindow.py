@@ -15,6 +15,7 @@ import settings
 
 from device_link import explain_socket_error
 from paths import APP_ICON
+from ui.about_dialog import AboutDialog
 from ui.Ui_mainwindow import Ui_MainWindow
 from ui.notifications import NotificationsWrapper
 from ui.settings_dialog import SettingsDialog
@@ -89,7 +90,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
         self.setupUi(self)
-        self.setWindowTitle(f'{QApplication.applicationName()} - v{QApplication.applicationVersion()}')
+        self.setWindowTitle(QApplication.applicationName())
 
         self.app_icon = QIcon(APP_ICON)
         # NOT isNull(): QIcon stores the path lazily and reports a missing file
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.tray_icon = None
         self.setup_tray()
 
+        self.button_about.clicked.connect(self.show_about)
         self.button_settings.clicked.connect(self.show_settings)
         self.button_hide.clicked.connect(self.hide_to_tray)
 
@@ -173,6 +175,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.action_settings.triggered.connect(self.show_settings)
         menu.addAction(self.action_settings)
 
+        # Also in the footer, like Settings - the window is often hidden, and
+        # GPLv3 wants the licence notice reachable from the running program.
+        self.action_about = QAction('About...', self)
+        self.action_about.triggered.connect(self.show_about)
+        menu.addAction(self.action_about)
+
         menu.addSeparator()
 
         self.action_quit = QAction('Quit', self)
@@ -234,6 +242,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         """Hand a transport control to the worker, which owns the session."""
         logger.debug('Transport button: %s', command)
         self.notifications_wrapper.send_command(command)
+
+    @pyqtSlot()
+    def show_about(self):
+        AboutDialog(self).exec_()
 
     @pyqtSlot()
     def show_settings(self):

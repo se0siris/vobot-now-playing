@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import re
-import datetime
 import PyInstaller.utils.win32.versioninfo as version_info
 
 # Must come before the project imports below: PyInstaller execs this file
@@ -10,9 +9,13 @@ import PyInstaller.utils.win32.versioninfo as version_info
 sys.path.insert(0, SPECPATH)
 
 from pyinstaller_monkey_patch import manifest
-from constants import VERSION_NUMBER, APP_NAME, ORG_NAME
+from constants import AUTHOR, COPYRIGHT_YEAR, VERSION_NUMBER, APP_NAME, ORG_NAME
 
-copyright_text = f'Copyright © {datetime.date.today().year} {ORG_NAME}'
+# AUTHOR, not ORG_NAME: the copyright holder is the person, and this has to
+# agree with the About dialog and the LICENSE. COPYRIGHT_YEAR rather than the
+# build date, so rebuilding next year does not silently restamp the exe with a
+# year the rest of the project does not claim.
+copyright_text = f'Copyright © {COPYRIGHT_YEAR} {AUTHOR}'
 version_string = '.'.join(map(str, VERSION_NUMBER))
 
 version = version_info.VSVersionInfo(

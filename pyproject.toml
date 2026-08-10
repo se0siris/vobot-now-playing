@@ -1,7 +1,7 @@
 [project]
 name = "vobot-now-playing"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "Displays the currently playing media from Windows media notifications on a Vobot Mini Dock."
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "coloredlogs~=15.0.1",

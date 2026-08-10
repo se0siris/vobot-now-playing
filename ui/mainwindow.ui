@@ -319,6 +319,16 @@
         </spacer>
        </item>
        <item>
+        <widget class="QPushButton" name="button_about">
+         <property name="cursor">
+          <cursorShape>PointingHandCursor</cursorShape>
+         </property>
+         <property name="text">
+          <string>&amp;About</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPushButton" name="button_settings">
          <property name="cursor">
           <cursorShape>PointingHandCursor</cursorShape>

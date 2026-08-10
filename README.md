@@ -1,3 +1,152 @@
 # Vobot Now Playing
 
-A Windows application to send media information, including cover art and playing state, to a MicroPython application running on a Vobot Mini Dock (ESP32-S3).
+Send what Windows is playing — title, artist, album, cover art and playback state — to a
+[Vobot Mini Dock](https://dock.myvobot.com/) sitting on your desk.
+
+<p align="center">
+  <img src="docs/images/vobot-photo.webp" alt="A Vobot Mini Dock displaying album art, track title and artist alongside the clock" width="700">
+</p>
+
+Windows already knows what every media player on your machine is doing. This puts that on a
+little screen you can actually see, instead of buried behind whichever window is on top.
+
+## How it works
+
+Two halves that talk over your local network:
+
+- **Windows client** (PyQt5) — watches the Windows media session, converts the cover art, and
+  pushes it to the dock over TCP.
+- **Mini Dock app** (MicroPython + LVGL) — listens on the dock, and draws what arrives.
+
+The client sits in the notification area and keeps feeding the dock while its window is closed.
+
+<p align="center">
+  <img src="docs/images/screenshot-01.png" alt="The Vobot Now Playing client window showing album art, track details and connection status" width="500">
+</p>
+
+## Features
+
+- Live title, artist, album and play/pause/stopped state from any player Windows knows about —
+  Spotify, foobar2000, browsers, whatever registers a media session.
+- Album art at 320×240, converted to RGB565 for the dock's panel.
+- **Transport controls** — previous, play/pause and next, driven from the client window.
+- **Automatic discovery** — the client finds the dock over UDP broadcast, so there is no IP
+  address to look up on first run.
+- **Artwork is only sent once.** The client announces an artwork ID and the dock says whether it
+  already has it, so a play/pause does not re-send 150KB of pixels.
+- Runs in the notification area, with optional start-hidden and close-to-tray behaviour.
+
+## Requirements
+
+| | |
+|---|---|
+| Windows | 10 (version 1809 or later) or Windows 11 |
+| Dock | Vobot Mini Dock, firmware 1.1.0 or later |
+| Network | Both on the same LAN |
+| Python | 3.13 — only if running from source |
+
+## Installation
+
+### Windows client
+
+Download the latest `.zip` from [Releases](https://github.com/se0siris/vobot-now-playing/releases),
+unpack it anywhere, and run `Vobot Now Playing.exe`. There is no installer.
+
+The build is unsigned, so SmartScreen will warn on first launch — *More info* → *Run anyway*.
+
+### Mini Dock app
+
+Copy `esp32/apps/win_now_playing/` to the `apps/` folder on the dock, using
+[Thonny](https://thonny.org/) or the dock's own app manager. Restart the dock and open
+**Windows Now Playing** from the app menu.
+
+The app listens on TCP port **32150** by default. If you need a different port, set `port` in the
+app's settings on the dock's web interface.
+
+## Configuration
+
+On first run the client searches the network and configures itself. If you would rather set the
+address by hand, or the search finds more than one dock, use **Settings**:
+
+- **Address / Port** — where the dock is. **Discover** searches for it; **Test Connection**
+  checks it without disturbing whatever the dock is currently showing.
+- **Find the dock automatically** — re-searches when a push fails, so a new DHCP lease doesn't
+  need your attention.
+- **Window** — keep running in the notification area when closed, and start hidden.
+
+Settings live in a plain INI file you can edit directly:
+
+```
+%APPDATA%\overThere\Vobot Now Playing\settings.ini
+```
+
+Changes made by hand apply on the next launch.
+
+## The protocol
+
+One TCP connection per update. The client sends a single line of JSON, the dock replies with a
+JSON acknowledgement, and the artwork body only follows if the dock asks for it:
+
+```
+client → {"title": ..., "artist": ..., "status": "PLAYING", "art_id": "…", "image_len": 153600, "proto": 3}
+dock   → {"ok": true, "send_art": true, "w": 320, "h": 240}
+client → <153,600 bytes of RGB565>
+dock   → {"ok": true}
+```
+
+`send_art` is false when the dock already holds that `art_id`, which is what keeps a pause event
+cheap. The dock reports its own panel geometry in `w`/`h`, so the client sizes future frames to
+whatever hardware answered rather than assuming 320×240.
+
+Discovery is a UDP broadcast on port **32151** — deliberately fixed, and not the configured TCP
+port, since a client that already knew the port would have nothing to discover. The dock replies
+with its address, the TCP port it actually bound, and its device ID.
+
+## Building from source
+
+Uses [uv](https://docs.astral.sh/uv/) for dependencies.
+
+```bash
+uv sync                                 # install dependencies
+uv run python vobot_now_playing.py      # run the client
+uv run pyinstaller pyinstaller.spec     # build dist/Vobot Now Playing/
+```
+
+Regenerating UI code after editing a form in Qt Designer:
+
+```bash
+uv run python -m PyQt5.uic.pyuic ui/mainwindow.ui -o ui/Ui_mainwindow.py
+uv run python -m PyQt5.uic.pyuic ui/settings_dialog.ui -o ui/Ui_settings_dialog.py
+uv run python -m PyQt5.uic.pyuic ui/about_dialog.ui -o ui/Ui_about_dialog.py
+```
+
+Releases are built by GitHub Actions. Pushing a `vX.Y.Z` tag builds the client and opens a draft
+release; the tag must match `VERSION_NUMBER` in `constants.py` or the build stops before it starts.
+
+## Project layout
+
+```
+vobot_now_playing.py            Entry point
+device_link.py                  Wire protocol
+discovery.py                    UDP discovery
+media_image.py                  Artwork selection and RGB565 packing
+settings.py                     Persisted settings
+ui/                             Windows client UI
+esp32/apps/win_now_playing/     The Mini Dock app
+```
+
+## Licence
+
+The **Windows client is GPL v3** — see [LICENSE](LICENSE). This follows from PyQt5, which is
+itself GPL v3, so anything distributed with it must be too.
+
+The **Mini Dock app** under `esp32/` is **MIT**, matching the convention of the other apps in the
+Vobot ecosystem so it can be freely borrowed from. It is a separate program that links none of the
+client's dependencies.
+
+## Author
+
+Gary Hughes — [github.com/se0siris](https://github.com/se0siris)
+
+Not affiliated with Vobot. Bug reports and pull requests are welcome on the
+[issue tracker](https://github.com/se0siris/vobot-now-playing/issues).

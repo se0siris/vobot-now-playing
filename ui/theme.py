@@ -208,6 +208,30 @@ QCheckBox {{
     spacing: 8px;
 }}
 
+/* -- About ------------------------------------------------------------- */
+
+#lbl_about_name {{
+    font-size: 16pt;
+    font-weight: 600;
+}}
+
+#lbl_about_version {{
+    color: {TEXT_SECONDARY};
+}}
+
+#lbl_about_author, #lbl_about_link {{
+    color: {TEXT_MUTED};
+}}
+
+#about_divider {{
+    background: {BORDER};
+}}
+
+#lbl_about_licence {{
+    color: {TEXT_SECONDARY};
+    font-size: 8pt;
+}}
+
 #lbl_test_result[result="ok"] {{
     color: {OK};
 }}
@@ -260,6 +284,10 @@ def dark_palette() -> QPalette:
     palette.setColor(QPalette.HighlightedText, QColor(TEXT))
     palette.setColor(QPalette.ToolTipBase, QColor(SURFACE))
     palette.setColor(QPalette.ToolTipText, QColor(TEXT))
+    # Anchors inside a QLabel are painted from the palette, not the stylesheet,
+    # so the About dialog's links would otherwise come out in Qt's default blue.
+    palette.setColor(QPalette.Link, QColor(ACCENT))
+    palette.setColor(QPalette.LinkVisited, QColor(ACCENT))
     # Fusion draws check boxes, spin arrows and frames from these, and the
     # defaults are near-black against a dark window - the outlines vanish.
     palette.setColor(QPalette.Light, QColor(SURFACE_HOVER))
