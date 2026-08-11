@@ -135,14 +135,18 @@ def _broadcast_sockets(local_addresses) -> list[tuple[socket.socket, str]]:
     """
     sockets = []
     for address in local_addresses:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.bind((address, 0))
             sock.setblocking(False)
-            sockets.append((sock, address))
         except OSError as exc:
+            # Close it here: the caller only closes what reaches the list, and
+            # a down or restricted interface is a normal, repeatable failure.
             logger.debug('Cannot search from %s: %s', address, exc)
+            sock.close()
+            continue
+        sockets.append((sock, address))
     return sockets
 
 
