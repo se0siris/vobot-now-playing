@@ -119,28 +119,18 @@ async def get_thumbnail_data(thumbnail):
     if thumbnail is None:
         return None
 
-    stream_op = thumbnail.open_read_async()
-    stream = await stream_op
-    input_stream = stream.get_input_stream_at(0)
+    with await thumbnail.open_read_async() as stream:
+        with stream.get_input_stream_at(0) as input_stream:
+            # Allocate a buffer.
+            logger.debug('Reading into buffer of size: %d bytes', stream.size)
+            buffer = streams.Buffer(stream.size)
+            read_buffer = await input_stream.read_async(buffer, buffer.capacity, streams.InputStreamOptions.NONE)
 
-    # Allocate a buffer.
-    logger.debug('Reading into buffer of size: %d bytes', stream.size)
-    buffer = streams.Buffer(stream.size)
-    read_op = input_stream.read_async(buffer, buffer.capacity, streams.InputStreamOptions.NONE)
-    read_buffer = await read_op
-
-    # Read bytes from IBuffer using DataReader.
-    data_reader = streams.DataReader.from_buffer(read_buffer)
-
-    byte_array = bytearray(read_buffer.length)
-    data_reader.read_bytes(byte_array)
-    bytes_data = bytes(byte_array)
-
-    data_reader.close()
-    input_stream.close()
-    stream.close()
-
-    return bytes_data
+            # Read bytes from IBuffer using DataReader.
+            with streams.DataReader.from_buffer(read_buffer) as data_reader:
+                byte_array = bytearray(read_buffer.length)
+                data_reader.read_bytes(byte_array)
+                return bytes(byte_array)
 
 
 class NotificationsWrapper(QObject):
