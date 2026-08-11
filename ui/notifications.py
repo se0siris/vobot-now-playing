@@ -8,6 +8,7 @@ import logging
 import time
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import winrt.windows.media.control as media_control
 import winrt.windows.storage.streams as streams
@@ -103,6 +104,51 @@ TRANSPORT_COMMANDS = {
 
 
 @dataclass(frozen=True)
+class Timeline:
+    """How far into the track the source says it had got, and when it said so.
+
+    `position` is a snapshot rather than a running counter, and the difference
+    matters: Edge publishes one, then leaves it alone for about a minute, raising
+    no event in between. Read twenty seconds apart it is the same number twice,
+    so anything displaying it directly would sit still and then jump.
+
+    `updated_at` is what makes it usable - it says when the snapshot was taken,
+    so a reader can work out how far playback has moved since. Measured against
+    Edge, that extrapolation lands within half a second after a full minute of
+    drift, which is well inside a pixel on screen.
+    """
+    position: float     # seconds from the start of the media
+    start: float        # usually 0, but a source may report a window
+    end: float
+    updated_at: datetime
+    rate: float = 1.0
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def position_at(self, playing: bool, now: datetime | None = None) -> float:
+        """Where playback has reached now, extrapolated from the snapshot.
+
+        Only while playing. A paused source leaves `position` where playback
+        stopped and lets `updated_at` age, so counting from it would run the
+        display on through the pause - a five second pause measured five
+        seconds of error, against hundredths for the extrapolation itself.
+        """
+        if not playing:
+            return self.position
+
+        age = ((now or datetime.now(timezone.utc)) - self.updated_at).total_seconds()
+        if not 0.0 <= age <= self.duration:
+            # Older than the track is long, or dated in the future: the anchor
+            # cannot say anything useful about now, so show what the source
+            # last claimed rather than a number derived from a bad timestamp.
+            return self.position
+
+        return min(self.position + age * self.rate, self.end)
+
+
+@dataclass(frozen=True)
 class TrackInfo:
     """A snapshot of what Windows says is playing."""
     title: str
@@ -116,6 +162,10 @@ class TrackInfo:
     # hundred milliseconds away, so a view is better off marking what it already
     # shows as stale than swapping in a leftover it will replace immediately.
     artwork_pending: bool = False
+    # Playback position, or None from a source that does not report one. Held
+    # as an anchor rather than a number so a view can keep it moving between
+    # refreshes - see Timeline.
+    timeline: Timeline | None = None
     # What this source will accept. Sources differ - a browser tab often offers
     # no previous/next at all - so the buttons follow these rather than assuming.
     can_previous: bool = False
@@ -152,6 +202,46 @@ def _available_controls(playback_info) -> tuple[bool, bool, bool]:
     except Exception:
         logger.debug('Could not read the available controls', exc_info=True)
         return False, False, False
+
+
+def _read_timeline(session, playback_info) -> Timeline | None:
+    """The source's playback position, or None if it does not report one.
+
+    Synchronous and cheap, unlike the media properties and the thumbnail, so it
+    rides along with every refresh the client already does. No subscription to
+    TimelinePropertiesChanged is needed for this: the anchor carries its own
+    timestamp, so one read ten seconds ago is as accurate as one read now. A
+    subscription would only catch a user dragging the source's own scrubber
+    sooner - and it would have to stay off _schedule_refresh(), since a source
+    that fires it every second would turn each one into a full metadata read.
+    """
+    try:
+        timeline = session.get_timeline_properties()
+        start = timeline.start_time.total_seconds()
+        end = timeline.end_time.total_seconds()
+        if end <= start:
+            # Nothing to draw against. A live stream has no end, and plenty of
+            # sources simply leave the timeline empty.
+            return None
+
+        updated_at = timeline.last_updated_time
+        if updated_at.tzinfo is None:
+            # Documented as UTC, and winrt does tag it - but an untagged one
+            # reaching position_at() would raise inside a repaint timer.
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+
+        return Timeline(
+            position=min(max(timeline.position.total_seconds(), start), end),
+            start=start,
+            end=end,
+            updated_at=updated_at,
+            # Podcast apps and browsers both offer speed controls, and the
+            # position advances at that rate rather than in real time.
+            rate=float(playback_info.playback_rate or 1.0),
+        )
+    except Exception:
+        logger.debug('Could not read the timeline properties', exc_info=True)
+        return None
 
 
 async def get_thumbnail_data(thumbnail):
@@ -218,6 +308,10 @@ class NotificationsWrapper(QObject):
         # Extra reads spent looking for the current track's own artwork.
         self._chase_key: tuple | None = None
         self._chases: int = 0
+
+        # AUMID of a session that would not report its metadata, so the same
+        # refusal is only logged once rather than on every poll.
+        self._unreadable_session: str | None = None
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -569,6 +663,53 @@ class NotificationsWrapper(QObject):
         self._last_device_ok = ok
         self.signal_device_state.emit(ok, message)
 
+    async def _read_media_properties(self, session):
+        """What the session says it is playing, or None if it will not say.
+
+        A session can be registered and current but not yet readable:
+        try_get_media_properties_async() raises ERROR_NOT_READY - "The device is
+        not ready" - and goes on raising it. Seen from Windows Media Player
+        (Microsoft.ZuneMusic), where it has lasted over thirty seconds.
+
+        Normally a moment, not a state to sit in: a source registers its session
+        as it opens media, slightly before the metadata behind it can be read.
+        Windows Media Player was measured going from bind, to unreadable, to full
+        title/artist/album inside the same second. Merely launching it does not
+        do this - with no track loaded it registers no session at all - so it is
+        opening the media that starts the race.
+
+        It can last much longer, though: over thirty seconds has been seen, from
+        a session that never became readable at all. So the pass it happens in is
+        given up and nothing is blacklisted, which covers both without having to
+        tell them apart.
+
+        Reported as nothing playing rather than as a failure, because that is
+        what it means for the panel, and because the alternative is worse than
+        the log noise. An unreadable session that becomes current while a track
+        is on show, with no empty gap in between, would otherwise leave the
+        window and the dock holding the previous player's last track.
+        """
+        try:
+            properties = await session.try_get_media_properties_async()
+        except Exception:
+            # Read from what we bound rather than from the session itself, which
+            # is in no state to be asked anything else.
+            session_id = self._session_id or 'unknown'
+            if session_id != self._unreadable_session:
+                # Once per session, with the traceback, rather than once per
+                # poll - this repeats every 10s for as long as the session stays
+                # current, and would bury everything else in the log.
+                self._unreadable_session = session_id
+                logger.info('Session %s will not report what it is playing; '
+                            'treating it as nothing playing', session_id,
+                            exc_info=True)
+            else:
+                logger.debug('Session %s is still unreadable', session_id)
+            return None
+
+        self._unreadable_session = None
+        return properties
+
     async def get_now_playing(self, poll: bool = False):
         """Read the session and push it to the device if anything changed."""
         try:
@@ -590,7 +731,19 @@ class NotificationsWrapper(QObject):
                 if session is not None:
                     self._bind_session(session)
 
-            if session is None:
+            # A session Windows will not let us read counts as no session at
+            # all, and takes the same path - see _read_media_properties().
+            media_props = None
+            if session is not None:
+                media_props = await self._read_media_properties(session)
+
+            if media_props is None:
+                # That read awaits, so the same teardown race applies here as
+                # below: whatever moved the session has queued its own refresh,
+                # and blanking the panel over the top of it would fight that.
+                if self._session is not session or self._session_grace is not None:
+                    logger.debug('Session changed while reading; dropping the read')
+                    return
                 self.signal_track.emit(None)
                 # Tell the dock too, so it drops the last track's artwork and
                 # goes back to its placeholder rather than showing a stale one.
@@ -599,9 +752,9 @@ class NotificationsWrapper(QObject):
                 await self._push(dict(IDLE_PAYLOAD), None)
                 return
 
-            media_props = await session.try_get_media_properties_async()
             playback_info = session.get_playback_info()
             status = playback_info.playback_status
+            timeline = _read_timeline(session, playback_info)
 
             title = media_props.title or ''
             artist = media_props.artist or ''
@@ -710,6 +863,7 @@ class NotificationsWrapper(QObject):
                 # has and marks it stale, instead of flashing up a 60x60 leftover.
                 thumbnail=None if artwork_pending else thumb_bytes,
                 artwork_pending=artwork_pending,
+                timeline=timeline,
                 can_previous=can_previous,
                 can_next=can_next,
                 can_play_pause=can_play_pause,

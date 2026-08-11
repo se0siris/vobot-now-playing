@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5.QtCore import QRectF, QThread, QTimer, Qt, pyqtSlot
+from PyQt5.QtCore import QEvent, QRectF, QThread, QTimer, Qt, pyqtSlot
 from PyQt5.QtGui import QIcon, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -42,6 +42,25 @@ PAUSE_GLYPH = STATUS_GLYPHS['PAUSED']
 # read as "on its way" beside the new title, without hiding what is still a
 # perfectly good cover for the fraction of a second before the real one lands.
 STALE_ART_DIM = 0.45
+
+# The position bar counts thousandths of a track rather than percent, because a
+# QProgressBar takes an integer and 1% of a three minute track is a step every
+# 1.8 seconds - visible as a stutter. Must match `maximum` in mainwindow.ui.
+PROGRESS_STEPS = 1000
+
+# How often the position is recomputed while playing. The bar is around 300px
+# wide, so half a second is under a pixel on a three minute track.
+PROGRESS_INTERVAL_MS = 500
+
+
+def format_duration(seconds: float) -> str:
+    """m:ss, widening to h:mm:ss only for something long enough to need it."""
+    total = max(0, int(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f'{hours}:{minutes:02d}:{secs:02d}'
+    return f'{minutes}:{secs:02d}'
 
 
 def rounded_pixmap(pixmap: QPixmap, size: int, radius: int, device_pixel_ratio: float = 1.0) -> QPixmap:
@@ -132,6 +151,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # without decoding and reclipping the thumbnail again.
         self._art_pixmap = None
         self._art_dimmed = False
+
+        # The position anchor the display is extrapolating from, and the state
+        # it was read in. See Timeline in ui/notifications.py.
+        self._timeline = None
+        self._timeline_playing = False
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(PROGRESS_INTERVAL_MS)
+        self._progress_timer.timeout.connect(self.refresh_progress)
 
         self.tray_icon = None
         self.setup_tray()
@@ -307,6 +334,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.button_next.setEnabled(track.can_next)
 
         self.set_artwork(track.thumbnail, track.art_id, track.artwork_pending)
+        self.set_timeline(track.timeline, track.is_playing)
 
         tooltip = ' - '.join(part for part in (track.artist, track.title) if part)
         if self.tray_icon is not None:
@@ -330,6 +358,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for button in (self.button_previous, self.button_play_pause, self.button_next):
             button.setEnabled(False)
         self.set_artwork(None, None)
+        self.set_timeline(None, False)
         if self.tray_icon is not None:
             self.tray_icon.setToolTip(QApplication.applicationName())
 
@@ -377,6 +406,68 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._art_dimmed = True
         self.lbl_art.setPixmap(dimmed_pixmap(self._art_pixmap))
 
+    # -- Playback position -------------------------------------------------
+
+    def set_timeline(self, timeline, playing):
+        """Take a fresh anchor from the session and redraw against it."""
+        self._timeline = timeline
+        self._timeline_playing = playing
+        # Sources that report no position get no bar at all, rather than an
+        # empty one - the row carries its own top margin, so hiding it closes
+        # the gap too. Live streams land here as well, having no end to run to.
+        self.panel_progress.setVisible(timeline is not None)
+
+        # Unconditional, like the status line above: this runs once per refresh,
+        # and tracking the previous value to save a polish of one small widget
+        # would cost more in edge cases than it saves.
+        self.progress_position.setProperty('playing', 'true' if playing else 'false')
+        restyle(self.progress_position)
+
+        self.refresh_progress()
+        self.sync_progress_timer()
+
+    def sync_progress_timer(self):
+        """Tick only when something is actually moving, and only when on screen.
+
+        A paused source needs no timer - its anchor already is the answer - and
+        neither does a window in the tray, which is the normal state here: the
+        dock keeps being fed with nothing on screen, and a repaint every half
+        second for the rest of the day would be the one expensive thing about
+        this feature.
+        """
+        should_run = (self._timeline is not None
+                      and self._timeline_playing
+                      and self.isVisible()
+                      and not self.isMinimized())
+        if should_run == self._progress_timer.isActive():
+            return
+        if should_run:
+            self._progress_timer.start()
+        else:
+            self._progress_timer.stop()
+
+    @pyqtSlot()
+    def refresh_progress(self):
+        """Redraw the bar from the anchor, without asking the session anything.
+
+        The anchor is timestamped, so this is self-correcting: a window that was
+        hidden for an hour comes back showing the right position, and no count
+        of missed ticks has to be kept.
+        """
+        timeline = self._timeline
+        if timeline is None:
+            return
+
+        # Once, not once per widget - two calls a tick would use two different
+        # `now`s and could disagree about the last second of a track.
+        position = timeline.position_at(self._timeline_playing)
+        span = timeline.duration
+        fraction = (position - timeline.start) / span if span > 0 else 0.0
+
+        self.progress_position.setValue(round(fraction * PROGRESS_STEPS))
+        self.lbl_elapsed.setText(format_duration(position - timeline.start))
+        self.lbl_duration.setText(format_duration(span))
+
     def show_placeholder_art(self):
         self.lbl_art.setPixmap(
             placeholder_pixmap(self.app_icon, ART_SIZE, self.devicePixelRatioF()))
@@ -417,6 +508,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         restyle(self.lbl_device_dot)
 
     # -- Window ------------------------------------------------------------
+
+    # The position bar is the only thing here that costs anything while nobody
+    # is looking, so its timer follows the window on and off screen. Coming back
+    # needs no catch-up beyond a redraw: the anchor is timestamped.
+
+    def showEvent(self, event):
+        super(MainWindow, self).showEvent(event)
+        self.refresh_progress()
+        self.sync_progress_timer()
+
+    def hideEvent(self, event):
+        super(MainWindow, self).hideEvent(event)
+        self.sync_progress_timer()
+
+    def changeEvent(self, event):
+        super(MainWindow, self).changeEvent(event)
+        # Minimising does not hide a window, so hideEvent never fires for it.
+        if event.type() == QEvent.WindowStateChange:
+            self.refresh_progress()
+            self.sync_progress_timer()
 
     def closeEvent(self, event):
         settings.set_geometry(self.saveGeometry())

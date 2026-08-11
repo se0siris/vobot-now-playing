@@ -160,6 +160,84 @@
           </widget>
          </item>
          <item>
+          <widget class="QWidget" name="panel_progress" native="true">
+           <layout class="QHBoxLayout" name="layout_progress">
+            <property name="spacing">
+             <number>10</number>
+            </property>
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>14</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="lbl_elapsed">
+              <property name="minimumSize">
+               <size>
+                <width>38</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>0:00</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QProgressBar" name="progress_position">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>6</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>6</height>
+               </size>
+              </property>
+              <property name="maximum">
+               <number>1000</number>
+              </property>
+              <property name="value">
+               <number>0</number>
+              </property>
+              <property name="textVisible">
+               <bool>false</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_duration">
+              <property name="minimumSize">
+               <size>
+                <width>38</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="text">
+               <string>0:00</string>
+              </property>
+              <property name="alignment">
+               <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
           <spacer name="spacer_transport">
            <property name="orientation">
             <enum>Qt::Vertical</enum>

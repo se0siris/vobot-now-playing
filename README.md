@@ -30,6 +30,9 @@ The client sits in the notification area and keeps feeding the dock while its wi
   Spotify, foobar2000, browsers, whatever registers a media session.
 - Album art at 320×240, converted to RGB565 for the dock's panel.
 - **Transport controls** — previous, play/pause and next, driven from the client window.
+- **Playback position** in the client window, for sources that report one. Windows publishes the
+  position as an occasional timestamped snapshot rather than a running clock, so the bar is
+  extrapolated from it between updates — accurate to under a second across a minute of drift.
 - **Automatic discovery** — the client finds the dock over UDP broadcast, so there is no IP
   address to look up on first run.
 - **Artwork is only sent once.** The client announces an artwork ID and the dock says whether it

@@ -106,6 +106,33 @@ QMainWindow, QDialog {{
     color: {ACCENT};
 }}
 
+/* -- Playback position ------------------------------------------------- */
+
+#lbl_elapsed, #lbl_duration {{
+    color: {TEXT_MUTED};
+    font-size: 8pt;
+}}
+
+/* Styling a QProgressBar at all replaces Fusion's own drawing of it, which is
+   what is wanted here - the native groove is sunken, bordered and several
+   times this height. */
+#progress_position {{
+    background: {SURFACE_PRESSED};
+    border: none;
+    border-radius: 3px;
+}}
+
+#progress_position::chunk {{
+    background: {ACCENT};
+    border-radius: 3px;
+}}
+
+/* Paused reads as the same colour the status line drops to, so the whole
+   panel says "stopped" at once rather than in two different voices. */
+#progress_position[playing="false"]::chunk {{
+    background: {IDLE};
+}}
+
 /* -- Footer ------------------------------------------------------------ */
 
 #footer {{
