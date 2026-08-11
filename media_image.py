@@ -49,13 +49,27 @@ def resize_thumbnail(thumbnail_bytes, size=FRAME_SIZE_DEFAULT):
     if thumbnail_bytes is None:
         return None, 0, 0
     try:
-        image = Image.open(BytesIO(thumbnail_bytes))
-        image = image.convert('RGB')
+        with Image.open(BytesIO(thumbnail_bytes)) as opened:
+            image = opened.convert('RGB')
     except Exception:
         logger.warning('Could not decode %d bytes of artwork; treating it as none',
                        len(thumbnail_bytes), exc_info=True)
         return None, 0, 0
-    image.thumbnail(size, Resampling.BICUBIC)
+    # Scale to fit the panel, enlarging as well as shrinking. Image.thumbnail()
+    # only ever shrinks, and sources publish artwork far smaller than the panel
+    # often enough to matter: Firefox hands over whichever image the page listed
+    # first in its media session metadata, unresized, which for YouTube Music is
+    # sometimes the 60x60 player-bar thumbnail. That used to reach the dock as a
+    # 60x60 stamp centred on black, filling 5% of the panel.
+    #
+    # Aspect ratio is preserved, so square art on a 4:3 panel caps out at 240x240
+    # and the enlargement never exceeds what the short axis allows.
+    scale = min(size[0] / image.width, size[1] / image.height)
+    fitted = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    if fitted != image.size:
+        # LANCZOS over BICUBIC: 0.12ms more on a 4x enlarge and slightly cleaner
+        # on the reductions, against ~4ms to read the thumbnail in the first place.
+        image = image.resize(fitted, Resampling.LANCZOS)
     width, height = image.size
 
     # Add padding on a black background if needed
@@ -154,6 +168,21 @@ class ArtworkPicker:
         return self._best_rank[0] if self._best_rank else 0
 
     @property
+    def holding_leftover(self) -> bool:
+        """True while the artwork held is one the previous track served.
+
+        Windows hands over the new metadata before the new thumbnail, so the
+        first read of a track is routinely the last image of the one before it.
+        A caller that knows this can keep reading instead of waiting for the
+        next event, which is what catches artwork that is only published for a
+        fraction of a second.
+
+        Two tracks that genuinely share a cover keep this true for as long as
+        they play, so a caller must bound how long it is willing to chase.
+        """
+        return self._best_id is not None and self._best_id in self._previous_seen
+
+    @property
     def settled(self) -> bool:
         """True once two separate reads have agreed on the artwork held.
 
@@ -163,6 +192,22 @@ class ArtworkPicker:
         and is what makes it safe for a caller to stop looking.
         """
         return self._agreements >= 2
+
+    def keep_as_own(self):
+        """Stop treating the held artwork as the previous track's.
+
+        For a caller that has looked for this track's own artwork and not found
+        it: an image the track before it also served, and which is still all that
+        is on offer, is not a leftover at all - the two tracks share a cover, as
+        consecutive tracks from one album do. Saying so ends the chase for good,
+        rather than leaving every later read to reach the same dead end.
+
+        Ranking is untouched, so a larger version turning up later still wins.
+        """
+        if not self._previous_seen:
+            return
+        logger.debug('Keeping artwork %s as this track\'s own', self._best_rank)
+        self._previous_seen = frozenset()
 
     def reset(self):
         """Forget the held artwork - nothing is playing at all."""

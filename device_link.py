@@ -55,6 +55,17 @@ class DeviceLink:
         self._device_art_id = None
         self.frame_size = FRAME_SIZE_DEFAULT
 
+    @property
+    def device_art_id(self) -> str | None:
+        """Artwork the device is known to be holding, if any.
+
+        Lets a caller with nothing better to send announce what is already on the
+        panel, so the exchange stays a header instead of a frame transfer. None
+        whenever that is unknown - a fresh link, a failed send, or a device that
+        reported a different panel size - in which case nothing may be assumed.
+        """
+        return self._device_art_id
+
     def _read_ack(self, sock: socket.socket, buffer: bytearray) -> dict:
         """Read one newline-terminated JSON object, keeping any trailing bytes."""
         while b'\n' not in buffer:

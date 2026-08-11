@@ -38,6 +38,11 @@ STATUS_GLYPHS = {
 PLAY_GLYPH = STATUS_GLYPHS['PLAYING']
 PAUSE_GLYPH = STATUS_GLYPHS['PAUSED']
 
+# How far to darken artwork that belongs to the track that just ended. Enough to
+# read as "on its way" beside the new title, without hiding what is still a
+# perfectly good cover for the fraction of a second before the real one lands.
+STALE_ART_DIM = 0.45
+
 
 def rounded_pixmap(pixmap: QPixmap, size: int, radius: int, device_pixel_ratio: float = 1.0) -> QPixmap:
     """Scale artwork to fit a square and clip it to rounded corners."""
@@ -63,6 +68,21 @@ def rounded_pixmap(pixmap: QPixmap, size: int, radius: int, device_pixel_ratio: 
     painter.end()
 
     out.setDevicePixelRatio(device_pixel_ratio)
+    return out
+
+
+def dimmed_pixmap(pixmap: QPixmap, opacity: float = STALE_ART_DIM) -> QPixmap:
+    """A darkened copy, for artwork known to belong to the track that just ended.
+
+    Painted over rather than recomputed from the source, so the artwork does not
+    have to be rescaled and reclipped to be marked stale.
+    """
+    out = QPixmap(pixmap)
+    painter = QPainter(out)
+    painter.setOpacity(opacity)
+    painter.fillRect(out.rect(), Qt.black)
+    painter.end()
+    out.setDevicePixelRatio(pixmap.devicePixelRatioF())
     return out
 
 
@@ -108,6 +128,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._quitting = False
         self._tray_hint_shown = False
         self._current_art_id = None
+        # The undimmed artwork on show, kept so it can be darkened and restored
+        # without decoding and reclipping the thumbnail again.
+        self._art_pixmap = None
+        self._art_dimmed = False
 
         self.tray_icon = None
         self.setup_tray()
@@ -282,7 +306,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.button_play_pause.setEnabled(track.can_play_pause)
         self.button_next.setEnabled(track.can_next)
 
-        self.set_artwork(track.thumbnail, track.art_id)
+        self.set_artwork(track.thumbnail, track.art_id, track.artwork_pending)
 
         tooltip = ' - '.join(part for part in (track.artist, track.title) if part)
         if self.tray_icon is not None:
@@ -309,27 +333,49 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if self.tray_icon is not None:
             self.tray_icon.setToolTip(QApplication.applicationName())
 
-    def set_artwork(self, thumb_bytes, art_id):
-        # Re-clipping the same artwork on every playback event is wasted work.
-        if art_id is not None and art_id == self._current_art_id:
+    def set_artwork(self, thumb_bytes, art_id, pending=False):
+        if pending:
+            # The track changed but its artwork has not arrived. Keep the cover we
+            # have and darken it rather than swapping in the leftover the session
+            # is still serving, which is usually a far smaller version of this
+            # very image and would read as the display getting worse.
+            self._dim_artwork()
+            return
+
+        # Re-clipping the same artwork on every playback event is wasted work -
+        # unless it is currently dimmed, which this call is here to undo.
+        if art_id is not None and art_id == self._current_art_id and not self._art_dimmed:
             return
         self._current_art_id = art_id
+        self._art_dimmed = False
 
         if not thumb_bytes:
+            self._art_pixmap = None
             self.show_placeholder_art()
             return
 
         source = QPixmap()
         if not source.loadFromData(thumb_bytes):
             logger.warning('Could not decode the thumbnail Windows gave us')
+            self._art_pixmap = None
             self.show_placeholder_art()
             return
 
         logger.debug('Received thumbnail (%d KB)', len(thumb_bytes) // 1024)
-        self.lbl_art.setPixmap(
-            rounded_pixmap(source, ART_SIZE, ART_RADIUS, self.devicePixelRatioF()))
+        self._art_pixmap = rounded_pixmap(
+            source, ART_SIZE, ART_RADIUS, self.devicePixelRatioF())
+        self.lbl_art.setPixmap(self._art_pixmap)
         self.lbl_art.setProperty('has_art', 'true')
         restyle(self.lbl_art)
+
+    def _dim_artwork(self):
+        """Mark the artwork on show as belonging to the track that just ended."""
+        # Nothing to dim, or already dimmed - the chase re-reads several times per
+        # track change and each one arrives here.
+        if self._art_pixmap is None or self._art_dimmed:
+            return
+        self._art_dimmed = True
+        self.lbl_art.setPixmap(dimmed_pixmap(self._art_pixmap))
 
     def show_placeholder_art(self):
         self.lbl_art.setPixmap(

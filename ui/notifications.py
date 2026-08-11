@@ -46,6 +46,40 @@ DISCOVERY_COOLDOWN = 60
 # 60x60 image, stretched over the whole panel, for the life of that track.
 GOOD_ART_AREA = 240 * 240
 
+# Extra reads a single track may spend looking for artwork of its own, once the
+# first read has turned up the previous track's.
+#
+# Sources publish artwork in phases. Firefox pushes the metadata first (the
+# thumbnail still being the last track's), then the full-size cover, then - well
+# under a second later - a small player-bar thumbnail that it then keeps. The
+# cover is only on offer for around half a second, and waiting for the next WinRT
+# event to look again misses it, because a frame transfer to the dock takes
+# seconds while a thumbnail read takes about four milliseconds.
+#
+# Bounded because two consecutive tracks sharing a cover look exactly like a
+# track whose own artwork has not arrived yet, and that must not spin.
+ARTWORK_CHASE_LIMIT = 10
+
+# Spacing between those reads. Needed, not incidental: only the first read of a
+# track pushes anything (the ones after it dedupe on an unchanged payload), so
+# without a wait the whole allowance would be spent in a few milliseconds, before
+# the cover this is looking for exists. The limit and the interval together cover
+# about a second and a half from the track change.
+ARTWORK_CHASE_INTERVAL = 0.15
+
+# How long to keep showing a player's last state after its session disappears.
+#
+# Sources drop and rebuild their session rather than updating it: Edge's vanishes
+# for 0.55-0.76s on every track change (measured over three skips). Windows offers
+# whatever else is open during that gap - another browser's paused tab, or nothing
+# at all - and following either shows a track nobody is playing, or blanks the
+# panel, for half a second per song. So a loss is treated as provisional, and only
+# committed if the player has not come back by the time this elapses.
+#
+# The cost is that deliberately switching players waits this out. Unnoticeable
+# next to a flash of the wrong track on every skip.
+SESSION_GRACE_SECONDS = 1.5
+
 # Pushed when Windows has no media session at all, so the dock can go back to
 # its placeholder instead of holding the last track for ever.
 IDLE_PAYLOAD = {
@@ -77,6 +111,11 @@ class TrackInfo:
     status: str
     art_id: str | None = None
     thumbnail: bytes | None = None
+    # Set while the only artwork on offer still belongs to the track that just
+    # ended, and thumbnail is therefore None. The track's own is usually a few
+    # hundred milliseconds away, so a view is better off marking what it already
+    # shows as stale than swapping in a leftover it will replace immediately.
+    artwork_pending: bool = False
     # What this source will accept. Sources differ - a browser tab often offers
     # no previous/next at all - so the buttons follow these rather than assuming.
     can_previous: bool = False
@@ -165,11 +204,20 @@ class NotificationsWrapper(QObject):
         self._manager_token = None
         self._session = None
         self._session_tokens: tuple | None = None
+        # Which player we are following, by AUMID - the session object itself is
+        # replaced wholesale on a track change, so it cannot be the identity.
+        self._session_id: str | None = None
+        # Set while a lost session is still within its grace period.
+        self._session_grace: asyncio.Task | None = None
 
         self._last_sent_key: tuple | None = None
         self._last_sent_at: float = 0.0
         self._last_device_ok: bool | None = None
         self._last_discovery_at: float = 0.0
+
+        # Extra reads spent looking for the current track's own artwork.
+        self._chase_key: tuple | None = None
+        self._chases: int = 0
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -311,6 +359,7 @@ class NotificationsWrapper(QObject):
 
         # Detach before cancelling: a handler that fired in between would
         # otherwise queue a refresh onto a loop that is about to close.
+        self._cancel_session_grace()
         self._bind_session(None)
         self._unbind_manager()
         await self._cancel_refresh()
@@ -355,6 +404,8 @@ class NotificationsWrapper(QObject):
 
         self._session = session
         self._session_tokens = None
+        self._session_id = (session.source_app_user_model_id
+                            if session is not None else None)
 
         if session is None:
             logger.info('No active media session.')
@@ -376,10 +427,62 @@ class NotificationsWrapper(QObject):
     def _handle_session_change(self):
         if self._manager is None:
             return
-        self._bind_session(self._manager.get_current_session())
+
+        session = self._manager.get_current_session()
+        new_id = (session.source_app_user_model_id
+                  if session is not None else None)
+
+        if new_id is not None and new_id == self._session_id:
+            # Same player, but usually a brand new session object: a source that
+            # rebuilds its session per track lands here, and this is the new
+            # track rather than a loss. Adopt it at once.
+            self._cancel_session_grace()
+            self._adopt_session(session)
+            return
+
+        if self._session_grace is not None:
+            # Still inside a grace period and still not the player we follow.
+            # _await_session_return() decides when the time is up.
+            return
+
+        if self._session_id is not None:
+            logger.debug('Session %s went away; holding its state for %.1fs',
+                         self._session_id, SESSION_GRACE_SECONDS)
+            self._session_grace = asyncio.create_task(self._await_session_return())
+            return
+
+        # Following nothing, so there is nothing to protect - a player starting
+        # from idle should appear immediately.
+        self._adopt_session(session)
+
+    def _adopt_session(self, session):
+        self._bind_session(session)
         # A new source means the old artwork and dedupe state are meaningless.
         self._last_sent_key = None
         self._schedule_refresh()
+
+    async def _await_session_return(self):
+        """Commit the loss of a session, unless the player comes back first."""
+        await asyncio.sleep(SESSION_GRACE_SECONDS)
+        self._session_grace = None
+        if self._manager is None:
+            return
+
+        session = self._manager.get_current_session()
+        new_id = (session.source_app_user_model_id
+                  if session is not None else None)
+        if new_id == self._session_id:
+            # Back without ever raising the event that would have told us.
+            logger.debug('Session %s is back', self._session_id)
+        else:
+            logger.debug('Session %s did not return; following %s',
+                         self._session_id, new_id)
+        self._adopt_session(session)
+
+    def _cancel_session_grace(self):
+        task, self._session_grace = self._session_grace, None
+        if task is not None and not task.done():
+            task.cancel()
 
     def _on_session_event(self, sender, args):
         """WinRT calls this on a pool thread - hop back onto our loop."""
@@ -469,6 +572,18 @@ class NotificationsWrapper(QObject):
     async def get_now_playing(self, poll: bool = False):
         """Read the session and push it to the device if anything changed."""
         try:
+            if self._session_grace is not None:
+                # The player we follow has gone missing and may be back within
+                # the grace period. Reading now would either find the session it
+                # was replaced with or find nothing, and pushing either is the
+                # flash this grace period exists to prevent. Reading the old
+                # session is no better - it has been torn down.
+                #
+                # Not logged: a source tearing its session down emits a burst of
+                # events on the way out, so this runs a dozen or more times per
+                # track change. The start and end of the grace are logged instead.
+                return
+
             session = self._session
             if session is None and self._manager is not None:
                 session = self._manager.get_current_session()
@@ -492,6 +607,13 @@ class NotificationsWrapper(QObject):
             artist = media_props.artist or ''
             album = media_props.album_title or ''
             track_key = (title, artist, album)
+
+            # The chase allowance belongs to the track, so it is reset here rather
+            # than in _chase_artwork() - that runs after the push, too late for
+            # the first read of a track to know it has a full allowance.
+            if track_key != self._chase_key:
+                self._chase_key = track_key
+                self._chases = 0
 
             # A poll tick re-reads the metadata cheaply, but the thumbnail is a
             # cross-process stream read - worth skipping once we hold artwork
@@ -521,9 +643,50 @@ class NotificationsWrapper(QObject):
                 else:
                     thumb_bytes = None
 
+            # This run has awaited twice by now, and the session can be lost or
+            # swapped underneath it in that time - the guard at the top only stops
+            # runs that have not started yet. A source reports CLOSED on its way
+            # out, and publishing that puts a stop symbol on the panel and "Closed"
+            # in the window until the replacement arrives. Whatever moved the
+            # session has already asked for a refresh of its own, so drop this one.
+            if self._session is not session or self._session_grace is not None:
+                logger.debug('Session changed while reading %r; dropping the read',
+                             title)
+                return
+
             art_id = art_id_for(thumb_bytes)
 
-            if thumb_bytes:
+            # Nothing worth sending yet, while the dock holds something at least
+            # as good. Two ways to get here, both a source part way through
+            # publishing a track: the artwork on offer still belongs to the track
+            # that just ended, or there is none at all yet because the metadata
+            # came first - which Edge does on every track change.
+            #
+            # Announcing what the dock already has keeps the exchange to a header
+            # and leaves the panel alone. Both alternatives are visible on it: a
+            # frame transfer measured in seconds for an image about to be
+            # replaced, or an art_id of None, which blanks the panel until the
+            # real cover lands.
+            #
+            # Bounded by the same allowance as the chase, so a track that
+            # genuinely has no artwork does end up saying so - just later. Only
+            # safe while the dock's artwork is known: a fresh link or a failed
+            # send leaves it holding something we cannot name.
+            artwork_pending = (self.device.device_art_id is not None
+                               and self._chases < ARTWORK_CHASE_LIMIT
+                               and (self._artwork.holding_leftover
+                                    or thumb_bytes is None))
+
+            if artwork_pending:
+                logger.debug('%s; leaving the dock on %s',
+                             'Artwork is still the previous track\'s'
+                             if self._artwork.holding_leftover
+                             else 'No artwork published for this track yet',
+                             self.device.device_art_id)
+                art_id = self.device.device_art_id
+                frame_bytes = None
+                width, height = self.device.frame_size
+            elif thumb_bytes:
                 frame_bytes, width, height = self._frames.frame_for(
                     thumb_bytes, art_id, self.device.frame_size)
                 if frame_bytes is None:
@@ -543,7 +706,10 @@ class NotificationsWrapper(QObject):
                 album=album,
                 status=status.name,
                 art_id=art_id,
-                thumbnail=thumb_bytes,
+                # Withheld rather than downgraded: the window keeps the image it
+                # has and marks it stale, instead of flashing up a 60x60 leftover.
+                thumbnail=None if artwork_pending else thumb_bytes,
+                artwork_pending=artwork_pending,
                 can_previous=can_previous,
                 can_next=can_next,
                 can_play_pause=can_play_pause,
@@ -559,5 +725,42 @@ class NotificationsWrapper(QObject):
                 'height': height,
             }, frame_bytes)
 
+            await self._chase_artwork(artwork_pending)
+
         except Exception:
             logger.exception('Failed to read or push the current media session')
+
+    async def _chase_artwork(self, pending: bool):
+        """Ask for another read shortly, while the artwork is still unsettled.
+
+        Deliberately after the push, not before: that push announces an art_id the
+        dock is already holding, so it costs a header and no frame transfer, and it
+        puts the new title on the panel immediately rather than making it wait
+        behind the artwork hunt.
+
+        Runs inside the refresh that is already in flight, so the wait cannot let
+        two reads overlap - see _schedule_refresh().
+        """
+        if not pending:
+            return
+
+        self._chases += 1
+        if self._chases >= ARTWORK_CHASE_LIMIT:
+            # Out of allowance, so publish whatever is true now rather than going
+            # round again on every later read. Either this track and the one
+            # before it share a cover - which makes the artwork held its own - or
+            # the track really has none and the dock should be told so.
+            #
+            # Immediately, with no wait: this is also what stops the window
+            # showing dimmed artwork for the rest of the song. Cannot recur, since
+            # the allowance is spent and `artwork_pending` is false from here.
+            logger.debug('Artwork unsettled after %d reads; publishing what we have',
+                         self._chases)
+            self._artwork.keep_as_own()
+            self._schedule_refresh()
+            return
+
+        logger.debug('Artwork not settled; read %d of %d',
+                     self._chases, ARTWORK_CHASE_LIMIT)
+        await asyncio.sleep(ARTWORK_CHASE_INTERVAL)
+        self._schedule_refresh()
