@@ -17,6 +17,24 @@ Memory design (the reason this file looks the way it does):
     pixels LVGL is still drawing from.
   * The two buffers swap: the network fills the back buffer while LVGL displays
     the front one, so a partially received frame is never on screen.
+  * The socket reads straight into a slice of the back buffer, so receiving a
+    frame allocates nothing of consequence. Reading into fresh bytes objects and
+    copying instead produced ~150KB of garbage per frame, and gc.collect() costs
+    200-280ms here - see _read_frame().
+
+Frame transfer, measured on firmware v1.2.6 over WiFi at -50dBm. Recorded so the
+obvious next lever is not pulled for nothing:
+
+  * Reading into fresh bytes objects and copying them in: 2000-5000ms per frame.
+  * Reading into a slice of the destination via readinto(): ~430ms, 350 KB/s.
+    Same number of socket reads - what changed is the garbage, and so the odds of
+    a collection landing mid-transfer.
+  * 27 reads per frame, and that is the TCP receive window rather than anything
+    this app chose: the boot log reports `tcp rx win: 5760` (4 x 1440 MSS), and
+    153600/5760 is 26.7. READ_CHUNK is already larger than the window can hand
+    over, so raising it does nothing. What is left is ~27 window round trips at
+    ~15ms, and shrinking that needs a bigger window - an lwIP build setting, not
+    an app one.
 
 Scrolling titles step visibly rather than gliding. This was investigated at
 length on firmware VOBOT v1.2.6 and is a display limit, not something this app
@@ -41,6 +59,7 @@ can fix - recorded here so it is not chased again:
 import gc
 import json
 import logging
+import time
 
 import lvgl as lv
 import net
@@ -97,6 +116,12 @@ MAX_HEADER = 1024
 CHUNK = 2048
 # Reused source for blanking a buffer without allocating a full-size zero block.
 _ZEROS = bytes(CHUNK)
+
+# Ceiling on one socket read, kept separate from CHUNK because it costs nothing:
+# the frame is read into a slice of the destination buffer, so this bounds how much
+# a single read may take, not anything allocated. Larger than CHUNK so that when
+# lwIP has several segments queued they are taken in one call rather than three.
+READ_CHUNK = 8192
 
 
 
@@ -209,21 +234,44 @@ def _swap_frame():
 async def _read_frame(reader, buf, total):
     """Stream `total` bytes into `buf`. Returns the number of bytes read.
 
-    Copies through a memoryview so nothing larger than CHUNK is ever allocated,
-    which is what keeps a track change off the big-object heap entirely.
+    Reads straight into a slice of the destination through readinto(), so a whole
+    frame allocates nothing but the memoryview slices - a few dozen bytes each.
+    That matters more than it looks: read() hands back a fresh bytes object per
+    call, which over a 150KB frame is 100-odd transient buffers and 150KB of
+    garbage, and a collection on this device costs 200-280ms. One landing
+    mid-transfer is worth more than the whole rest of the read.
+
+    readinto() is feature-detected rather than assumed - firmware builds differ on
+    what asyncio.Stream exposes, and the read() path stays correct if it is absent.
     """
     view = memoryview(buf)
+    readinto = getattr(reader, 'readinto', None)
+    started = time.ticks_ms()
     read = 0
+    reads = 0
+
     while read < total:
         want = total - read
-        if want > CHUNK:
-            want = CHUNK
-        chunk = await reader.read(want)
-        if not chunk:
-            break
-        end = read + len(chunk)
-        view[read:end] = chunk
-        read = end
+        if want > READ_CHUNK:
+            want = READ_CHUNK
+        reads += 1
+        if readinto is None:
+            chunk = await reader.read(want)
+            if not chunk:
+                break
+            got = len(chunk)
+            view[read:read + got] = chunk
+        else:
+            got = await readinto(view[read:read + want])
+            if not got:
+                break
+        read += got
+
+    elapsed = time.ticks_diff(time.ticks_ms(), started)
+    if elapsed > 0:
+        logger.info('Frame: %d bytes in %dms (%d KB/s) over %d reads%s',
+                    read, elapsed, (read * 1000) // elapsed // 1024, reads,
+                    '' if readinto is not None else ' (no readinto)')
     return read
 
 
