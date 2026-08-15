@@ -36,8 +36,15 @@ TCP_ART_TIMEOUT = 20
 
 # Wire protocol spoken with the Mini Dock app. 2 added the art_id handshake, so
 # unchanged album art is not re-sent on every play/pause event. 3 added the IDLE
-# status, pushed when Windows has no media session, and UDP discovery.
-PROTOCOL_VERSION = 3
+# status, pushed when Windows has no media session, and UDP discovery. 4 added
+# the `light` field, driving the dock's ambient light from the artwork.
+PROTOCOL_VERSION = 4
+
+# Ambient light brightness, 0-100, as the dock's peripherals API takes it. Only
+# a default: the value in use is per-installation, via settings.py. 60 rather
+# than full, because the strip faces the wall behind the dock and 100 washes out
+# the colour it is meant to be showing.
+LIGHT_BRIGHTNESS_DEFAULT = 60
 
 # Fallback frame geometry. The device reports its own in the handshake ack and
 # that value is adopted for subsequent frames.

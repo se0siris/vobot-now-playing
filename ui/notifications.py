@@ -19,7 +19,7 @@ import discovery
 import settings
 
 from device_link import DeviceLink, SendResult
-from media_image import ArtworkPicker, FrameCache, art_id_for
+from media_image import ArtworkPicker, ColourCache, FrameCache, art_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,19 @@ IDLE_PAYLOAD = {
     'art_id': None,
     'width': 0,
     'height': 0,
+    # Explicitly null rather than omitted: nothing is playing, so the dock should
+    # hand the ambient light back rather than hold the last track's colour. Sent
+    # even when the feature is off, which costs nothing and means switching it
+    # off and then stopping playback still tidies up after itself.
+    'light': None,
 }
+
+
+# Says "send no `light` field at all", which the dock reads as leave the ambient
+# light exactly as it is. Distinct from None, which means release it. A plain
+# None cannot carry both meanings and the difference is what stops the light
+# flickering through every track change - see _light_spec().
+_NO_LIGHT = object()
 
 
 # Transport commands the UI can ask for, mapped to the session method that
@@ -277,6 +289,7 @@ class NotificationsWrapper(QObject):
         self.device = DeviceLink()
         self._artwork = ArtworkPicker()
         self._frames = FrameCache()
+        self._colours = ColourCache()
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event: asyncio.Event | None = None
@@ -345,6 +358,29 @@ class NotificationsWrapper(QObject):
             self._pending_address = (host, port)
             return
         loop.call_soon_threadsafe(self._apply_device_address, host, port)
+
+    def refresh_settings(self):
+        """Re-push with whatever the settings now say. Safe from the GUI thread.
+
+        The worker reads settings on each push, so a change would eventually
+        apply on its own - but only at the next media event, or the next
+        heartbeat 30 seconds out, because a push that differs solely in its
+        settings-derived fields still has to get past the dedupe in _push().
+        Turning the ambient light on and watching nothing happen for half a
+        minute reads as a broken feature, so this forces one through at once.
+
+        No _pending_address equivalent is needed: if the loop is not up yet
+        there is nothing to re-push, and the first push will read the new
+        settings anyway.
+        """
+        loop = self._loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._apply_settings_change)
+
+    def _apply_settings_change(self):
+        self._last_sent_key = None
+        self._schedule_refresh()
 
     def send_command(self, command: str):
         """Run a transport control. Safe to call from the GUI thread."""
@@ -595,8 +631,13 @@ class NotificationsWrapper(QObject):
         through periodically so a device that restarted picks the display back
         up without waiting for the next song.
         """
+        # 'light' is in the key because it can change on its own: the user moves
+        # the brightness slider, or switches the feature off, while the track and
+        # its artwork stay exactly as they are. Without it that push looks like a
+        # repeat and is dropped for up to HEARTBEAT_SECONDS. It is a tuple or
+        # None for the same reason - this key has to be hashable.
         payload_key = tuple(payload.get(key) for key in
-                            ('status', 'title', 'artist', 'album', 'art_id'))
+                            ('status', 'title', 'artist', 'album', 'art_id', 'light'))
         now = time.monotonic()
         if (payload_key == self._last_sent_key
                 and now - self._last_sent_at < HEARTBEAT_SECONDS):
@@ -749,6 +790,7 @@ class NotificationsWrapper(QObject):
                 # goes back to its placeholder rather than showing a stale one.
                 self._artwork.reset()
                 self._frames.clear()
+                self._colours.clear()
                 await self._push(dict(IDLE_PAYLOAD), None)
                 return
 
@@ -847,10 +889,12 @@ class NotificationsWrapper(QObject):
                     # would only earn a geometry error from the device.
                     art_id = None
                     self._frames.clear()
+                    self._colours.clear()
             else:
                 logger.debug('No thumbnail available.')
                 frame_bytes, width, height = None, 0, 0
                 self._frames.clear()
+                self._colours.clear()
 
             can_previous, can_next, can_play_pause = _available_controls(playback_info)
             self.signal_track.emit(TrackInfo(
@@ -869,7 +913,7 @@ class NotificationsWrapper(QObject):
                 can_play_pause=can_play_pause,
             ))
 
-            await self._push({
+            payload = {
                 'status': status.name,
                 'title': title,
                 'artist': artist,
@@ -877,12 +921,50 @@ class NotificationsWrapper(QObject):
                 'art_id': art_id,
                 'width': width,
                 'height': height,
-            }, frame_bytes)
+            }
+            light = self._light_spec(thumb_bytes, art_id, artwork_pending)
+            if light is not _NO_LIGHT:
+                payload['light'] = light
+            await self._push(payload, frame_bytes)
 
             await self._chase_artwork(artwork_pending)
 
         except Exception:
             logger.exception('Failed to read or push the current media session')
+
+    def _light_spec(self, thumb_bytes, art_id, artwork_pending: bool):
+        """What to tell the dock about its ambient light, if anything.
+
+        Three answers, because there are three genuinely different situations:
+
+          * `_NO_LIGHT` - say nothing, leave it alone. Only while the artwork is
+            still unsettled: the image on hand belongs to the track that just
+            ended, so a colour read off it would be the *previous* track's, shown
+            for the fraction of a second before the real cover lands. This rides
+            on exactly the same signal that keeps the leftover off the panel.
+          * `None` - release it. The feature is off, or the track has no artwork
+            at all, in which case there is nothing to take a colour from and
+            holding the last one would be a lie.
+          * `(r, g, b, brightness)` - this track's colour. A tuple rather than a
+            list because _push() hashes it for the dedupe key.
+
+        Settings are read here on each push rather than cached, so a change takes
+        effect on the next one. What makes that *prompt* rather than eventual is
+        refresh_settings().
+        """
+        if not settings.light_enabled():
+            return None
+        if artwork_pending:
+            return _NO_LIGHT
+        if art_id is None:
+            # No artwork, or artwork that would not decode. Also the gate that
+            # keeps ColourCache useful: it keys on art_id, so a None would make
+            # every push re-run a decode that is only going to fail again.
+            return None
+        colour = self._colours.colour_for(thumb_bytes, art_id)
+        if colour is None:
+            return None
+        return (*colour, settings.light_brightness())
 
     async def _chase_artwork(self, pending: bool):
         """Ask for another read shortly, while the artwork is still unsettled.

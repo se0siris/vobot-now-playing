@@ -13,7 +13,7 @@ import os
 
 from PyQt5.QtCore import QSettings, QStandardPaths
 
-from constants import TCP_IP, TCP_PORT
+from constants import LIGHT_BRIGHTNESS_DEFAULT, TCP_IP, TCP_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 KEY_HOST = 'device/host'
 KEY_PORT = 'device/port'
 KEY_AUTO_DISCOVER = 'device/auto_discover'
+KEY_LIGHT_ENABLED = 'light/enabled'
+KEY_LIGHT_BRIGHTNESS = 'light/brightness'
 KEY_CLOSE_TO_TRAY = 'window/close_to_tray'
 KEY_START_MINIMIZED = 'window/start_minimized'
 KEY_GEOMETRY = 'window/geometry'
@@ -32,6 +34,11 @@ DEFAULTS = {
     KEY_HOST: TCP_IP,
     KEY_PORT: TCP_PORT,
     KEY_AUTO_DISCOVER: True,
+    # Off by default, and deliberately so: turning it on makes the dock's app
+    # take ownership of the ambient light, suppressing whatever the device was
+    # doing with it. Not something to do to someone who did not ask.
+    KEY_LIGHT_ENABLED: False,
+    KEY_LIGHT_BRIGHTNESS: LIGHT_BRIGHTNESS_DEFAULT,
     KEY_CLOSE_TO_TRAY: True,
     KEY_START_MINIMIZED: False,
 }
@@ -106,6 +113,34 @@ def auto_discover() -> bool:
 
 def set_auto_discover(enabled: bool) -> None:
     _settings().setValue(KEY_AUTO_DISCOVER, bool(enabled))
+
+
+def light_enabled() -> bool:
+    return _bool_setting(KEY_LIGHT_ENABLED)
+
+
+def set_light_enabled(enabled: bool) -> None:
+    _settings().setValue(KEY_LIGHT_ENABLED, bool(enabled))
+
+
+def light_brightness() -> int:
+    """Ambient light brightness, 0-100.
+
+    Clamped on the way out as well as parsed, since this is hand-editable and
+    the dock would otherwise be handed a value its API does not accept.
+    """
+    fallback = DEFAULTS[KEY_LIGHT_BRIGHTNESS]
+    try:
+        value = int(_settings().value(KEY_LIGHT_BRIGHTNESS, fallback))
+    except (TypeError, ValueError):
+        logger.warning('Stored light brightness is not a number; falling back to %d',
+                       fallback)
+        return fallback
+    return max(0, min(100, value))
+
+
+def set_light_brightness(value: int) -> None:
+    _settings().setValue(KEY_LIGHT_BRIGHTNESS, max(0, min(100, int(value))))
 
 
 def close_to_tray() -> bool:

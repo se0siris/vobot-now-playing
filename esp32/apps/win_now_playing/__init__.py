@@ -94,9 +94,11 @@ logger = logging.getLogger(NAME.lower().replace(' ', '_'))
 # 2 adds the art_id handshake: the client announces the artwork it intends to
 # send, and only transfers the 150KB body when we say we do not already have it.
 # 3 adds the IDLE status, pushed when Windows has no media session at all, and
-# the UDP discovery service below. Both ends ignore each other's version field,
-# so an older client still works - it simply never sends IDLE.
-PROTOCOL_VERSION = 3
+# the UDP discovery service below. 4 adds the `light` header field, driving the
+# ambient light from the artwork. Both ends ignore each other's version field, so
+# an older client still works - it simply never sends IDLE or `light`, and a
+# missing `light` is defined to mean "leave the light alone".
+PROTOCOL_VERSION = 4
 
 DEFAULT_PORT = 32150
 
@@ -138,6 +140,125 @@ def _screen_resolution():
 
 FRAME_W, FRAME_H = _screen_resolution()
 FRAME_SIZE = FRAME_W * FRAME_H * 2  # RGB565, 2 bytes/pixel
+
+
+# ---------------------------------------------------------------------------
+# Ambient light
+# ---------------------------------------------------------------------------
+# The dock's RGB strip, driven from the dominant colour of the cover art the
+# client is showing. Measured on this hardware: 14 LEDs, acquire() succeeds, and
+# set_color([(r, g, b)], True) tiles one colour across the whole strip.
+#
+# Ownership is the thing to be careful with. acquire() suspends whatever the
+# system was doing with the light and release() hands it back, so the app holds
+# it only while a client is actually asking for a colour. That is why the header
+# key is tri-state rather than a plain colour - see handle_client().
+#
+# The peripheral is feature-detected rather than assumed, the same way
+# _screen_resolution() treats `peripherals`: a firmware without it must not take
+# down on_start(), and one that raises must not do so on every push.
+
+light_owned = False        # we hold the peripheral and the system effect is suspended
+light_state = None         # last (r, g, b, brightness) applied, so repeats are free
+light_available = True     # cleared for good on the first failure
+
+# Distinguishes "the client said nothing about the light" from "the client said
+# turn it off". A plain None cannot, and the difference is the whole design.
+_NO_LIGHT = object()
+
+
+def _ambient_light():
+    """The ambient light object, or None if this build has no such thing."""
+    global light_available
+
+    if not light_available:
+        return None
+    try:
+        import peripherals
+        light = getattr(peripherals, 'ambient_light', None)
+        if light is None:
+            logger.warning('No peripherals.ambient_light on this firmware; '
+                           'the light is disabled')
+            light_available = False
+        return light
+    except Exception as exc:
+        logger.warning('peripherals unavailable (%s); the light is disabled', exc)
+        light_available = False
+        return None
+
+
+def _apply_light(spec):
+    """Set, or release, the ambient light from a client's `light` header field.
+
+    `_NO_LIGHT` leaves it exactly as it is - which is what a client sends while
+    it is still hunting for the track's real artwork, and what a pre-v4 client
+    sends for everything. None releases it. A (r, g, b, brightness) tuple takes
+    ownership and applies it.
+    """
+    global light_owned, light_state, light_available
+
+    if spec is _NO_LIGHT:
+        return
+    if spec is None:
+        _release_light()
+        return
+    if not light_available:
+        return
+
+    try:
+        red, green, blue, level = (int(v) for v in spec)
+    except Exception:
+        logger.warning('Ignoring malformed light spec: %s', spec)
+        return
+    state = (red, green, blue, level)
+    if light_owned and state == light_state:
+        # The client re-sends its full state on every playback event. Rewriting
+        # an unchanged colour is pure cost on the strip and in this handler.
+        return
+
+    light = _ambient_light()
+    if light is None:
+        return
+    try:
+        if not light_owned:
+            if not light.acquire():
+                logger.warning('Could not acquire the ambient light')
+                return
+            light_owned = True
+            logger.info('Ambient light acquired (%s LEDs)',
+                        getattr(light, 'count', '?'))
+        light.set_color([(red, green, blue)], True)
+        light.brightness(max(0, min(100, level)))
+        light_state = state
+    except Exception as exc:
+        # Once, not once per push - the client pushes several times a second
+        # while a track plays and a traceback each time would bury the log.
+        logger.warning('Ambient light failed (%s); disabling it', exc)
+        light_available = False
+        light_state = None
+
+
+def _release_light():
+    """Hand the light back, so whatever the system was doing with it resumes.
+
+    Safe to call when nothing was ever acquired, which is the common case - the
+    feature is off by default in the client.
+    """
+    global light_owned, light_state
+
+    light_state = None
+    if not light_owned:
+        return
+    light_owned = False
+
+    light = _ambient_light()
+    if light is None:
+        return
+    try:
+        light.release()
+        logger.info('Ambient light released')
+    except Exception as exc:
+        logger.warning('Ambient light release failed: %s', exc)
 
 
 def _rgb565(red, green, blue):
@@ -448,10 +569,23 @@ async def handle_client(reader, writer):
     """One request/response exchange, then the client disconnects.
 
     Wire format:
-        -> {"title","artist","album","status","art_id","image_len","width","height"}\\n
+        -> {"title","artist","album","status","art_id","image_len","width","height",
+            "light"}\\n
         <- {"ok","proto","send_art","w","h"}\\n
         -> <image_len raw RGB565 bytes>        (only when send_art is true)
         <- {"ok"}\\n
+
+    `light` is optional and tri-state, which is what lets one field cover three
+    situations that are genuinely different:
+
+        absent            leave the ambient light exactly as it is. A pre-v4
+                          client sends this for everything, so upgrading the dock
+                          alone never disturbs the light; a v4 client sends it
+                          while it is still hunting for the new track's artwork,
+                          where the only colour on hand is the last track's.
+        null              release the light - nothing is playing, or the user has
+                          the feature switched off.
+        [r, g, b, level]  own it and show this colour at this brightness.
     """
     global busy, client_task, art_id, have_art, ground_is_idle
 
@@ -559,6 +693,10 @@ async def handle_client(reader, writer):
             _show_idle('Nothing playing')
         else:
             _apply_metadata(meta)
+        # Deliberately after the frame swap rather than straight off the header:
+        # a transfer takes seconds, and changing the light at the top would leave
+        # it announcing the next track while the panel still showed the last one.
+        _apply_light(meta.get('light', _NO_LIGHT))
         if geometry_error:
             _set_status(geometry_error)
 
@@ -779,10 +917,16 @@ async def on_start():
     global scr, canvas, canvas_buf, back_buf
     global info_bar, title_label, artist_label, state_label, status_label
     global placeholder, server_task, discovery_task, art_id, have_art, ground_is_idle
+    global light_owned, light_state
 
     logger.info('on start')
     art_id = None
     have_art = False
+    # on_stop() released the light, so nothing is held and no colour is current.
+    # light_available is deliberately not reset: a firmware that has no ambient
+    # light will not have grown one since.
+    light_owned = False
+    light_state = None
     # Both buffers are filled with the idle ground a few lines down.
     ground_is_idle = True
     # Widgets are about to be rebuilt, so nothing is on screen yet.
@@ -874,7 +1018,11 @@ async def on_start():
 
 async def on_pause():
     """Backgrounded. The server deliberately stays up so the Windows client
-    keeps succeeding and the display is already current on the way back in."""
+    keeps succeeding and the display is already current on the way back in.
+
+    The ambient light is held for the same reason: it is not part of this app's
+    screen, so there is nothing to hand back while another app is merely in
+    front. on_stop() is where it is released."""
     logger.info('on pause')
 
 
@@ -898,6 +1046,11 @@ async def on_stop():
     # Retire any exchange still in flight. It holds its own buffer reference and
     # the session check drops its writes, so teardown never has to wait on it.
     session += 1
+
+    # Before the awaits, like the UI teardown below: the system swaps the menu
+    # back in as soon as this hook returns, and leaving the light owned would
+    # keep whatever the system does with it suppressed for good.
+    _release_light()
 
     art_id = None
     have_art = False

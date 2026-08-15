@@ -305,6 +305,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return
 
         self.notifications_wrapper.set_device_address(dialog.host, dialog.port)
+        # Everything else the dialog saved is read by the worker on its next
+        # push, so nudge it into making one - otherwise turning the ambient light
+        # on does nothing visible until the next track change or heartbeat.
+        self.notifications_wrapper.refresh_settings()
         # Show the new target straight away rather than waiting for a push.
         self.update_device_label(None, '')
 

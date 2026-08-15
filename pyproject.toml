@@ -21,5 +21,6 @@ dev = [
     "micropython-esp32-stubs==1.27.0.post1",
     "ipython==9.16.1",
     "pyinstaller==6.22.0",
-    "pyinstaller-hooks-contrib==2026.6"
+    "pyinstaller-hooks-contrib==2026.6",
+    "pyserial==3.5"
 ]

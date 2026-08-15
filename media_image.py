@@ -1,6 +1,8 @@
-"""Artwork handling: ranking the thumbnails Windows hands out, and packing the
-chosen one into the RGB565 frame the Mini Dock draws.
+"""Artwork handling: ranking the thumbnails Windows hands out, packing the
+chosen one into the RGB565 frame the Mini Dock draws, and reading a colour off
+it for the dock's ambient light.
 """
+import colorsys
 import hashlib
 import logging
 
@@ -91,6 +93,127 @@ def art_id_for(thumbnail_bytes) -> str | None:
     if not thumbnail_bytes:
         return None
     return hashlib.sha1(thumbnail_bytes).hexdigest()[:16]
+
+
+# Dominant colour extraction, for the dock's ambient light.
+#
+# Sampled at this size rather than full resolution: the answer is a single
+# colour, so detail buys nothing, and it keeps the whole thing to roughly the
+# cost of decoding the thumbnail in the first place.
+COLOUR_SAMPLE_SIZE = (64, 64)
+# Clusters to reduce the cover to. Enough to keep a cover's accent colour
+# separate from its background, few enough that each one means something.
+COLOUR_CLUSTERS = 8
+
+# Pixels this dark say nothing about a cover's colour - they are its shadows and
+# its letterboxing, and on a strip of LEDs they are indistinguishable from off.
+COLOUR_MIN_VALUE = 0.15
+
+# What a cluster's share of the image is worth against how colourful it is,
+# *among clusters that have a colour at all*. The constant keeps a large muted
+# region in the running rather than letting one vivid speck win outright.
+COLOUR_SATURATION_WEIGHT = 0.30
+
+# The strip is 14 LEDs behind the dock, bounced off a wall. A faithful colour
+# read straight off a dim or washed-out cover arrives there as approximately
+# nothing, so the winner is lifted to at least this much before it is sent. This
+# is the difference between "the light is the colour of the album" and "the
+# light appears to be broken".
+COLOUR_MIN_SATURATION = 0.60
+COLOUR_MIN_BRIGHTNESS = 0.90
+
+# Below this a cluster has no hue worth having: white, black, grey, and the
+# off-white paper that a great many covers are mostly made of. Two jobs, and
+# both matter:
+#
+#   * It splits the clusters into tiers. Anything with a colour wins outright
+#     over anything without, however little of the cover it occupies. Scoring
+#     them together instead does not work, and measured against real covers is
+#     what made half of them come out white: a cover that is 70% off-white at
+#     saturation 0.05 scores 0.35x count, where a 10% vivid accent scores only
+#     0.12x count. The background won every time, and an ambient light that
+#     shows white for half an album collection is not showing anything.
+#   * It gates the saturation boost below, because hue survives desaturation in
+#     HSV: a black-and-white cover comes back as hue 0, and lifting it to the
+#     floor would light the dock bright red for an album with no colour in it.
+#
+# So a genuinely colourless cover still shows white - it just has to be the only
+# thing on offer, rather than merely the largest.
+COLOUR_ACHROMATIC = 0.12
+
+
+def dominant_colour(thumbnail_bytes) -> tuple[int, int, int] | None:
+    """The colour a piece of artwork reads as, for the dock's ambient light.
+
+    Not the average - that is grey-brown for any cover with more than one hue in
+    it. The image is reduced to a handful of clusters, the ones that carry no
+    colour information are dropped, and what is left competes on how much of the
+    cover it covers *and* how colourful it is.
+
+    Returns None when the artwork cannot be decoded, which is the same thing
+    resize_thumbnail() does with it: one bad thumbnail is not worth failing an
+    update over.
+    """
+    if not thumbnail_bytes:
+        return None
+    try:
+        with Image.open(BytesIO(thumbnail_bytes)) as opened:
+            sample = opened.convert('RGB').resize(COLOUR_SAMPLE_SIZE,
+                                                  Resampling.BILINEAR)
+            # FASTOCTREE over the default median cut: it returns the colours
+            # actually present rather than interpolating new ones, which is what
+            # is wanted when the answer is "which colour is this cover".
+            quantised = sample.quantize(colors=COLOUR_CLUSTERS,
+                                        method=Image.Quantize.FASTOCTREE)
+            palette = quantised.getpalette()
+            counts = quantised.getcolors()
+    except Exception:
+        logger.warning('Could not read a colour from %d bytes of artwork',
+                       len(thumbnail_bytes), exc_info=True)
+        return None
+
+    if not counts or not palette:
+        return None
+
+    best = None          # best cluster that has a hue - always wins if one exists
+    best_score = 0.0
+    plain = None         # largest colourless one, for a cover that has no hue
+    plain_count = -1
+
+    for count, index in counts:
+        red, green, blue = palette[index * 3:index * 3 + 3]
+        hue, saturation, value = colorsys.rgb_to_hsv(red / 255, green / 255,
+                                                     blue / 255)
+        if value < COLOUR_MIN_VALUE:
+            continue
+        if saturation < COLOUR_ACHROMATIC:
+            if count > plain_count:
+                plain_count = count
+                plain = (hue, saturation, value)
+            continue
+        score = count * (COLOUR_SATURATION_WEIGHT + saturation)
+        if score > best_score:
+            best_score = score
+            best = (hue, saturation, value)
+
+    if best is None:
+        # Nothing on this cover has a colour. Show the largest thing that is at
+        # least visible; failing even that - an all-black cover - the largest
+        # cluster there is, so something goes out rather than nothing.
+        if plain is None:
+            index = max(counts)[1]
+            red, green, blue = palette[index * 3:index * 3 + 3]
+            plain = colorsys.rgb_to_hsv(red / 255, green / 255, blue / 255)
+        best = plain
+
+    hue, saturation, value = best
+    if saturation >= COLOUR_ACHROMATIC:
+        saturation = max(saturation, COLOUR_MIN_SATURATION)
+    red, green, blue = colorsys.hsv_to_rgb(
+        hue, saturation, max(value, COLOUR_MIN_BRIGHTNESS))
+    colour = (round(red * 255), round(green * 255), round(blue * 255))
+    logger.debug('Artwork reads as %s', colour)
+    return colour
 
 
 def thumbnail_rank(thumbnail_bytes) -> tuple[int, int]:
@@ -305,3 +428,29 @@ class FrameCache:
         self._art_id = None
         self._frame = None
         self._size = (0, 0)
+
+
+class ColourCache:
+    """Dominant colour for the current artwork.
+
+    Deliberately not folded into FrameCache, which looks like the obvious home
+    for it: that only runs when a frame is actually needed, and the colour is
+    needed on *every* push. Most pushes send no frame at all - the art_id
+    handshake sees to that - so a colour cached there would be recomputed from
+    scratch on the play/pause events where it is most often wanted.
+    """
+
+    def __init__(self):
+        self._art_id: str | None = None
+        self._colour: tuple[int, int, int] | None = None
+
+    def colour_for(self, thumbnail_bytes, art_id) -> tuple[int, int, int] | None:
+        if art_id is not None and art_id == self._art_id:
+            return self._colour
+        self._art_id = art_id
+        self._colour = dominant_colour(thumbnail_bytes)
+        return self._colour
+
+    def clear(self):
+        self._art_id = None
+        self._colour = None

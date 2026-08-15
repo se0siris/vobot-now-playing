@@ -59,6 +59,8 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.edit_host.setText(settings.device_host())
         self.spin_port.setValue(settings.device_port())
         self.check_auto_discover.setChecked(settings.auto_discover())
+        self.check_ambient_light.setChecked(settings.light_enabled())
+        self.spin_light_brightness.setValue(settings.light_brightness())
         self.check_close_to_tray.setChecked(settings.close_to_tray())
         self.check_start_minimized.setChecked(settings.start_minimized())
 
@@ -66,6 +68,11 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.button_discover.clicked.connect(self.discover)
         self.edit_host.textChanged.connect(self.clear_test_result)
         self.spin_port.valueChanged.connect(self.clear_test_result)
+        # Brightness means nothing while the light is not being driven, so it
+        # follows the checkbox rather than sitting there inviting a change that
+        # would do nothing.
+        self.check_ambient_light.toggled.connect(self.spin_light_brightness.setEnabled)
+        self.spin_light_brightness.setEnabled(self.check_ambient_light.isChecked())
 
     @property
     def host(self) -> str:
@@ -157,7 +164,11 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
 
         settings.set_device_address(self.host, self.port)
         settings.set_auto_discover(self.check_auto_discover.isChecked())
+        settings.set_light_enabled(self.check_ambient_light.isChecked())
+        settings.set_light_brightness(self.spin_light_brightness.value())
         settings.set_close_to_tray(self.check_close_to_tray.isChecked())
         settings.set_start_minimized(self.check_start_minimized.isChecked())
-        logger.info('Settings saved: device %s:%d', self.host, self.port)
+        logger.info('Settings saved: device %s:%d, ambient light %s',
+                    self.host, self.port,
+                    'on' if self.check_ambient_light.isChecked() else 'off')
         super(SettingsDialog, self).accept()
