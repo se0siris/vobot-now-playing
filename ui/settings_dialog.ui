@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>440</width>
-    <height>490</height>
+    <height>650</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -235,6 +235,70 @@
          </widget>
         </item>
        </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_taskbar">
+     <property name="title">
+      <string>Taskbar</string>
+     </property>
+     <layout class="QVBoxLayout" name="layout_taskbar">
+      <property name="spacing">
+       <number>10</number>
+      </property>
+      <item>
+       <widget class="QCheckBox" name="check_taskbar_button">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Hiding minimises instead of vanishing. A hidden window has no taskbar button, and the options below need one</string>
+        </property>
+        <property name="text">
+         <string>Always keep a taskbar button</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="check_taskbar_media">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Adds a play/pause emblem, and makes hovering show the album art with transport buttons instead of a preview of this window</string>
+        </property>
+        <property name="text">
+         <string>Use the taskbar button as a media control</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="check_taskbar_artwork">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Also changes the Alt-Tab and title bar icon, since Windows draws all three from the same one</string>
+        </property>
+        <property name="text">
+         <string>Show the album art as the taskbar icon</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="check_taskbar_progress">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Non-standard: Windows uses this bar for file operations, so it may read as one</string>
+        </property>
+        <property name="text">
+         <string>Show track progress on the taskbar button</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </widget>

@@ -64,6 +64,10 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.check_close_to_tray.setChecked(settings.close_to_tray())
         self.check_start_minimized.setChecked(settings.start_minimized())
         self.check_tray_hint.setChecked(settings.tray_hint())
+        self.check_taskbar_button.setChecked(settings.taskbar_button())
+        self.check_taskbar_media.setChecked(settings.taskbar_media_controls())
+        self.check_taskbar_artwork.setChecked(settings.taskbar_artwork_icon())
+        self.check_taskbar_progress.setChecked(settings.taskbar_progress())
 
         self.button_test.clicked.connect(self.test_connection)
         self.button_discover.clicked.connect(self.discover)
@@ -74,6 +78,10 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         # would do nothing.
         self.check_ambient_light.toggled.connect(self.spin_light_brightness.setEnabled)
         self.spin_light_brightness.setEnabled(self.check_ambient_light.isChecked())
+        # The two options below "Always keep a taskbar button" are deliberately
+        # NOT disabled when it is off. They are not dependent on it: they work
+        # whenever the window is open or minimised, which is most of the time.
+        # That option only decides whether hiding keeps the button too.
 
     @property
     def host(self) -> str:
@@ -170,6 +178,10 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         settings.set_close_to_tray(self.check_close_to_tray.isChecked())
         settings.set_start_minimized(self.check_start_minimized.isChecked())
         settings.set_tray_hint(self.check_tray_hint.isChecked())
+        settings.set_taskbar_button(self.check_taskbar_button.isChecked())
+        settings.set_taskbar_media_controls(self.check_taskbar_media.isChecked())
+        settings.set_taskbar_artwork_icon(self.check_taskbar_artwork.isChecked())
+        settings.set_taskbar_progress(self.check_taskbar_progress.isChecked())
         logger.info('Settings saved: device %s:%d, ambient light %s',
                     self.host, self.port,
                     'on' if self.check_ambient_light.isChecked() else 'off')

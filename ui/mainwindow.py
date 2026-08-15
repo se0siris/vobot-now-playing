@@ -19,6 +19,7 @@ from ui.about_dialog import AboutDialog
 from ui.Ui_mainwindow import Ui_MainWindow
 from ui.notifications import NotificationsWrapper
 from ui.settings_dialog import SettingsDialog
+from ui.taskbar import TaskbarIntegration
 from ui.theme import restyle, use_dark_titlebar
 
 logger = logging.getLogger(__name__)
@@ -160,8 +161,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._progress_timer.setInterval(PROGRESS_INTERVAL_MS)
         self._progress_timer.timeout.connect(self.refresh_progress)
 
+        # The cover as Windows handed it over, undecorated - the panel's own copy
+        # is rounded and resized for the panel, which is not what the taskbar
+        # icon or the hover thumbnail want.
+        self._art_source = None
+
         self.tray_icon = None
         self.setup_tray()
+
+        # Bound to the native window handle on the first showEvent; until then
+        # every call on it is a no-op, so nothing has to check.
+        self.taskbar = TaskbarIntegration(self)
+        self.taskbar.command.connect(self.send_command)
 
         self.button_about.clicked.connect(self.show_about)
         self.button_settings.clicked.connect(self.show_settings)
@@ -253,7 +264,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             if self.isVisible() and not self.isMinimized():
-                self.hide()
+                # Same route as the Hide button, so the tray icon and the button
+                # cannot disagree about what hiding means.
+                self.hide_to_tray()
             else:
                 self.show_from_tray()
 
@@ -265,7 +278,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     @pyqtSlot()
     def hide_to_tray(self):
-        if self.tray_icon is None:
+        """Get out of the way - by minimising or by vanishing entirely.
+
+        Minimising is not a lesser hide here, it is the one that keeps the
+        taskbar button alive, and with it the artwork icon, the transport
+        buttons, the hover thumbnail and the progress bar. Hiding takes all four
+        away, which is the whole reason the setting exists.
+        """
+        if self.tray_icon is None or settings.taskbar_button():
             self.showMinimized()
             return
         self.hide()
@@ -342,6 +362,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # push, so nudge it into making one - otherwise turning the ambient light
         # on does nothing visible until the next track change or heartbeat.
         self.notifications_wrapper.refresh_settings()
+        # The artwork icon and the progress bar are both read from settings at
+        # draw time, so this is what makes a change to either visible now rather
+        # than at the next track.
+        self.taskbar.apply_settings()
+        self.sync_progress_timer()
         # Show the new target straight away rather than waiting for a push.
         self.update_device_label(None, '')
 
@@ -377,6 +402,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if self.tray_icon is not None:
             self.tray_icon.setToolTip(tooltip or QApplication.applicationName())
 
+        # After set_artwork, which is what refreshes _art_source.
+        self.taskbar.set_track(
+            self._art_source,
+            'play' if track.is_playing else
+            ('pause' if track.status == 'PAUSED' else 'stop'),
+            track.can_previous, track.can_next, track.can_play_pause)
+
     @staticmethod
     def _set_optional(label, text):
         """Empty metadata should collapse rather than leave a hole in the stack."""
@@ -398,6 +430,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.set_timeline(None, False)
         if self.tray_icon is not None:
             self.tray_icon.setToolTip(QApplication.applicationName())
+        self.taskbar.clear()
 
     def set_artwork(self, thumb_bytes, art_id, pending=False):
         if pending:
@@ -417,6 +450,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         if not thumb_bytes:
             self._art_pixmap = None
+            self._art_source = None
             self.show_placeholder_art()
             return
 
@@ -424,10 +458,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if not source.loadFromData(thumb_bytes):
             logger.warning('Could not decode the thumbnail Windows gave us')
             self._art_pixmap = None
+            self._art_source = None
             self.show_placeholder_art()
             return
 
         logger.debug('Received thumbnail (%d KB)', len(thumb_bytes) // 1024)
+        self._art_source = source
         self._art_pixmap = rounded_pixmap(
             source, ART_SIZE, ART_RADIUS, self.devicePixelRatioF())
         self.lbl_art.setPixmap(self._art_pixmap)
@@ -460,6 +496,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.progress_position.setProperty('playing', 'true' if playing else 'false')
         restyle(self.progress_position)
 
+        # refresh_progress() returns early with no anchor, so a source that
+        # reports no position - a live stream - would otherwise leave the last
+        # track's bar sitting on the taskbar button.
+        if timeline is None:
+            self.taskbar.set_progress(None, False)
+
         self.refresh_progress()
         self.sync_progress_timer()
 
@@ -472,10 +514,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         second for the rest of the day would be the one expensive thing about
         this feature.
         """
+        # Minimised is off screen for the panel but *not* for the taskbar, which
+        # is still drawing a progress bar someone can see - so that case keeps
+        # ticking. A hidden window has no taskbar button at all, so it does not.
+        on_screen = self.isVisible() and not self.isMinimized()
+        on_taskbar = self.isVisible() and self.taskbar.shows_progress
         should_run = (self._timeline is not None
                       and self._timeline_playing
-                      and self.isVisible()
-                      and not self.isMinimized())
+                      and (on_screen or on_taskbar))
         if should_run == self._progress_timer.isActive():
             return
         if should_run:
@@ -504,6 +550,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.progress_position.setValue(round(fraction * PROGRESS_STEPS))
         self.lbl_elapsed.setText(format_duration(position - timeline.start))
         self.lbl_duration.setText(format_duration(span))
+        self.taskbar.set_progress(fraction if span > 0 else None,
+                                  self._timeline_playing)
 
     def show_placeholder_art(self):
         self.lbl_art.setPixmap(
@@ -552,6 +600,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def showEvent(self, event):
         super(MainWindow, self).showEvent(event)
+        # First show is where windowHandle() finally exists, which is what the
+        # taskbar button and thumbnail toolbar both need. No-ops after that.
+        self.taskbar.attach()
         self.refresh_progress()
         self.sync_progress_timer()
 
@@ -583,5 +634,4 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # Closing means "get out of my way", not "stop sending to the dock".
         event.ignore()
-        self.hide()
-        self.notify_hidden()
+        self.hide_to_tray()

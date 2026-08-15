@@ -27,6 +27,10 @@ KEY_CLOSE_TO_TRAY = 'window/close_to_tray'
 KEY_START_MINIMIZED = 'window/start_minimized'
 KEY_TRAY_HINT = 'window/tray_hint'
 KEY_GEOMETRY = 'window/geometry'
+KEY_TASKBAR_BUTTON = 'taskbar/keep_button'
+KEY_TASKBAR_MEDIA_CONTROLS = 'taskbar/media_controls'
+KEY_TASKBAR_ARTWORK_ICON = 'taskbar/artwork_icon'
+KEY_TASKBAR_PROGRESS = 'taskbar/progress'
 
 # Written out on first run so the file exists, with every key present, before
 # anyone goes looking for it. Geometry is deliberately absent - it is an opaque
@@ -46,6 +50,18 @@ DEFAULTS = {
     # the tray is exactly when it needs explaining. It is the *repetition* that
     # grates, which is what clicking the notification turns off.
     KEY_TRAY_HINT: True,
+    # All off: the taskbar features are extras to opt into, not the way this app
+    # behaves out of the box. Stock, its taskbar button is an ordinary one -
+    # the app's own icon, a preview of the window, nothing borrowed.
+    #
+    # Note the cost of the first being off: a hidden window has no taskbar
+    # button, so hiding takes the media controls, the artwork icon and the
+    # progress bar with it. The rest still apply while the window is open or
+    # minimised, which is why they are independent of it rather than nested.
+    KEY_TASKBAR_BUTTON: False,
+    KEY_TASKBAR_MEDIA_CONTROLS: False,
+    KEY_TASKBAR_ARTWORK_ICON: False,
+    KEY_TASKBAR_PROGRESS: False,
 }
 
 
@@ -170,6 +186,44 @@ def tray_hint() -> bool:
 
 def set_tray_hint(enabled: bool) -> None:
     _settings().setValue(KEY_TRAY_HINT, bool(enabled))
+
+
+def taskbar_button() -> bool:
+    return _bool_setting(KEY_TASKBAR_BUTTON)
+
+
+def set_taskbar_button(enabled: bool) -> None:
+    _settings().setValue(KEY_TASKBAR_BUTTON, bool(enabled))
+
+
+def taskbar_media_controls() -> bool:
+    """Whether the taskbar button acts as a media control.
+
+    Gates three things at once - the status badge, the transport buttons, and
+    the artwork thumbnail that replaces the live window preview - because they
+    are one idea rather than three preferences.
+    """
+    return _bool_setting(KEY_TASKBAR_MEDIA_CONTROLS)
+
+
+def set_taskbar_media_controls(enabled: bool) -> None:
+    _settings().setValue(KEY_TASKBAR_MEDIA_CONTROLS, bool(enabled))
+
+
+def taskbar_artwork_icon() -> bool:
+    return _bool_setting(KEY_TASKBAR_ARTWORK_ICON)
+
+
+def set_taskbar_artwork_icon(enabled: bool) -> None:
+    _settings().setValue(KEY_TASKBAR_ARTWORK_ICON, bool(enabled))
+
+
+def taskbar_progress() -> bool:
+    return _bool_setting(KEY_TASKBAR_PROGRESS)
+
+
+def set_taskbar_progress(enabled: bool) -> None:
+    _settings().setValue(KEY_TASKBAR_PROGRESS, bool(enabled))
 
 
 def geometry() -> bytes | None:
