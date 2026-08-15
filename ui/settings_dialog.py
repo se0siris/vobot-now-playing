@@ -63,6 +63,7 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.spin_light_brightness.setValue(settings.light_brightness())
         self.check_close_to_tray.setChecked(settings.close_to_tray())
         self.check_start_minimized.setChecked(settings.start_minimized())
+        self.check_tray_hint.setChecked(settings.tray_hint())
 
         self.button_test.clicked.connect(self.test_connection)
         self.button_discover.clicked.connect(self.discover)
@@ -168,6 +169,7 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         settings.set_light_brightness(self.spin_light_brightness.value())
         settings.set_close_to_tray(self.check_close_to_tray.isChecked())
         settings.set_start_minimized(self.check_start_minimized.isChecked())
+        settings.set_tray_hint(self.check_tray_hint.isChecked())
         logger.info('Settings saved: device %s:%d, ambient light %s',
                     self.host, self.port,
                     'on' if self.check_ambient_light.isChecked() else 'off')

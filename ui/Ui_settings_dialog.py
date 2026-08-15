@@ -14,7 +14,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_SettingsDialog(object):
     def setupUi(self, SettingsDialog):
         SettingsDialog.setObjectName("SettingsDialog")
-        SettingsDialog.resize(440, 460)
+        SettingsDialog.resize(440, 490)
         self.layout_dialog = QtWidgets.QVBoxLayout(SettingsDialog)
         self.layout_dialog.setContentsMargins(20, 20, 20, 20)
         self.layout_dialog.setSpacing(16)
@@ -115,6 +115,10 @@ class Ui_SettingsDialog(object):
         self.check_start_minimized.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         self.check_start_minimized.setObjectName("check_start_minimized")
         self.layout_window.addWidget(self.check_start_minimized)
+        self.check_tray_hint = QtWidgets.QCheckBox(self.group_window)
+        self.check_tray_hint.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.check_tray_hint.setObjectName("check_tray_hint")
+        self.layout_window.addWidget(self.check_tray_hint)
         self.layout_dialog.addWidget(self.group_window)
         spacerItem1 = QtWidgets.QSpacerItem(20, 10, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding)
         self.layout_dialog.addItem(spacerItem1)
@@ -149,3 +153,5 @@ class Ui_SettingsDialog(object):
         self.group_window.setTitle(_translate("SettingsDialog", "Window"))
         self.check_close_to_tray.setText(_translate("SettingsDialog", "Keep running in the notification area when the window is closed"))
         self.check_start_minimized.setText(_translate("SettingsDialog", "Start hidden in the notification area"))
+        self.check_tray_hint.setToolTip(_translate("SettingsDialog", "Shown once per run, and only until you click the notification to turn it off"))
+        self.check_tray_hint.setText(_translate("SettingsDialog", "Explain where the window went when it hides"))

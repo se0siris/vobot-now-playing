@@ -25,6 +25,7 @@ KEY_LIGHT_ENABLED = 'light/enabled'
 KEY_LIGHT_BRIGHTNESS = 'light/brightness'
 KEY_CLOSE_TO_TRAY = 'window/close_to_tray'
 KEY_START_MINIMIZED = 'window/start_minimized'
+KEY_TRAY_HINT = 'window/tray_hint'
 KEY_GEOMETRY = 'window/geometry'
 
 # Written out on first run so the file exists, with every key present, before
@@ -41,6 +42,10 @@ DEFAULTS = {
     KEY_LIGHT_BRIGHTNESS: LIGHT_BRIGHTNESS_DEFAULT,
     KEY_CLOSE_TO_TRAY: True,
     KEY_START_MINIMIZED: False,
+    # On until the user says otherwise: the first time a window vanishes into
+    # the tray is exactly when it needs explaining. It is the *repetition* that
+    # grates, which is what clicking the notification turns off.
+    KEY_TRAY_HINT: True,
 }
 
 
@@ -157,6 +162,14 @@ def start_minimized() -> bool:
 
 def set_start_minimized(enabled: bool) -> None:
     _settings().setValue(KEY_START_MINIMIZED, bool(enabled))
+
+
+def tray_hint() -> bool:
+    return _bool_setting(KEY_TRAY_HINT)
+
+
+def set_tray_hint(enabled: bool) -> None:
+    _settings().setValue(KEY_TRAY_HINT, bool(enabled))
 
 
 def geometry() -> bytes | None:

@@ -242,6 +242,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.setToolTip(QApplication.applicationName())
         self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.messageClicked.connect(self.on_message_clicked)
         self.tray_icon.show()
 
         # Hiding the window must not end the process - the whole point of the
@@ -271,16 +272,42 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.notify_hidden()
 
     def notify_hidden(self):
-        """Explain the disappearing window, but only the first time."""
+        """Explain the disappearing window - once a session, and only until the
+        user has had enough of being told.
+
+        Qt 5's tray API has no way to put a button in a balloon: showMessage()
+        takes a title, a message, an icon and a timeout, and the only interaction
+        it offers back is messageClicked on the whole balloon. Real buttons would
+        mean Windows toast notifications through WinRT, which need an
+        AppUserModelID backed by a Start Menu shortcut - an installer, for this.
+        So the balloon says what clicking it does, and clicking it anywhere
+        counts. See on_message_clicked().
+        """
         if self._tray_hint_shown or self.tray_icon is None:
+            return
+        if not settings.tray_hint():
             return
         self._tray_hint_shown = True
         self.tray_icon.showMessage(
             QApplication.applicationName(),
-            'Still running - your dock keeps updating. Click the tray icon to bring this back.',
+            'Still running - your dock keeps updating. Click the tray icon to '
+            'bring this back.\n\nClick here to stop showing this.',
             self.app_icon,
             4000,
         )
+
+    @pyqtSlot()
+    def on_message_clicked(self):
+        """The balloon was clicked, which is the only 'button' Qt gives us.
+
+        Nothing else in this app raises a tray message, so a click here can only
+        mean the hide hint - there is no ambiguity to resolve. If another message
+        is ever added, this needs to know which one was on screen.
+        """
+        if not settings.tray_hint():
+            return
+        settings.set_tray_hint(False)
+        logger.info('Tray hint dismissed for good')
 
     @pyqtSlot()
     def quit_application(self):
@@ -303,6 +330,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         dialog = SettingsDialog(self)
         if not dialog.exec_():
             return
+
+        # Turning the hint back on should mean it can appear again now, not only
+        # after a restart - this flag is "already shown this run", and the user
+        # has just said they want to see it.
+        if dialog.check_tray_hint.isChecked():
+            self._tray_hint_shown = False
 
         self.notifications_wrapper.set_device_address(dialog.host, dialog.port)
         # Everything else the dialog saved is read by the worker on its next

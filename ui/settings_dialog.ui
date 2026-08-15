@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>440</width>
-    <height>460</height>
+    <height>490</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -265,6 +265,19 @@
         </property>
         <property name="text">
          <string>Start hidden in the notification area</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="check_tray_hint">
+        <property name="cursor">
+         <cursorShape>PointingHandCursor</cursorShape>
+        </property>
+        <property name="toolTip">
+         <string>Shown once per run, and only until you click the notification to turn it off</string>
+        </property>
+        <property name="text">
+         <string>Explain where the window went when it hides</string>
         </property>
        </widget>
       </item>
