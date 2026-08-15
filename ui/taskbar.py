@@ -44,14 +44,13 @@ Three switches, and the grouping is deliberate:
   * `taskbar_progress()` is separate again, being the one that borrows a piece
     of Windows chrome that already means something else.
 """
+
 import ctypes
 import logging
 
 from PyQt5.QtCore import QObject, QRectF, Qt, pyqtSignal
-from PyQt5.QtGui import (QBrush, QColor, QIcon, QPainter, QPainterPath, QPen,
-                         QPixmap)
-from PyQt5.QtWinExtras import (QWinTaskbarButton, QWinThumbnailToolBar,
-                               QWinThumbnailToolButton)
+from PyQt5.QtGui import QBrush, QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt5.QtWinExtras import QWinTaskbarButton, QWinThumbnailToolBar, QWinThumbnailToolButton
 
 import settings
 
@@ -110,21 +109,28 @@ def _set_iconic_attributes(hwnd: int, enabled: bool, invalidate: bool = True) ->
         value = ctypes.c_int(1 if enabled else 0)
         dwm = ctypes.windll.dwmapi
         results = []
-        for attribute in (DWMWA_HAS_ICONIC_BITMAP,
-                          DWMWA_FORCE_ICONIC_REPRESENTATION):
-            results.append(dwm.DwmSetWindowAttribute(
-                hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)))
+        for attribute in (DWMWA_HAS_ICONIC_BITMAP, DWMWA_FORCE_ICONIC_REPRESENTATION):
+            results.append(
+                dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)),
+            )
         # Drops the bitmap Windows is holding, so the next hover asks again
         # rather than re-serving what it already had.
         if invalidate:
             results.append(dwm.DwmInvalidateIconicBitmaps(hwnd))
-            logger.debug('Iconic thumbnail %s on hwnd 0x%X: hr=%s',
-                         'enabled' if enabled else 'disabled', hwnd,
-                         ['0x%08X' % (r & 0xFFFFFFFF) for r in results])
+            logger.debug(
+                'Iconic thumbnail %s on hwnd 0x%X: hr=%s',
+                'enabled' if enabled else 'disabled',
+                hwnd,
+                ['0x%08X' % (r & 0xFFFFFFFF) for r in results],
+            )
         return all(r == 0 for r in results)
     except Exception as exc:
-        logger.warning('Could not %s the iconic thumbnail: %s',
-                       'enable' if enabled else 'disable', exc)
+        logger.warning(
+            'Could not %s the iconic thumbnail: %s',
+            'enable' if enabled else 'disable',
+            exc,
+            exc_info=True,
+        )
         return False
 
 
@@ -180,8 +186,14 @@ def badge_icon(kind: str) -> QIcon:
 
     icon = QIcon()
     icon.addPixmap(pixmap)
-    icon.addPixmap(pixmap.scaled(16, 16, Qt.KeepAspectRatio,
-                                 Qt.SmoothTransformation))
+    icon.addPixmap(
+        pixmap.scaled(
+            16,
+            16,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+    )
     return icon
 
 
@@ -196,8 +208,14 @@ def _icon_from_artwork(artwork: QPixmap) -> QIcon:
     """
     icon = QIcon()
     for size in ICON_SIZES:
-        icon.addPixmap(artwork.scaled(size, size, Qt.KeepAspectRatio,
-                                      Qt.SmoothTransformation))
+        icon.addPixmap(
+            artwork.scaled(
+                size,
+                size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        )
     return icon
 
 
@@ -209,11 +227,18 @@ def compose_thumbnail(artwork: QPixmap | None, size) -> QPixmap:
     if artwork is None or artwork.isNull():
         return canvas
 
-    scaled = artwork.scaled(width, height, Qt.KeepAspectRatio,
-                            Qt.SmoothTransformation)
+    scaled = artwork.scaled(
+        width,
+        height,
+        Qt.KeepAspectRatio,
+        Qt.SmoothTransformation,
+    )
     painter = QPainter(canvas)
-    painter.drawPixmap((width - scaled.width()) // 2,
-                       (height - scaled.height()) // 2, scaled)
+    painter.drawPixmap(
+        (width - scaled.width()) // 2,
+        (height - scaled.height()) // 2,
+        scaled,
+    )
     painter.end()
     return canvas
 
@@ -221,7 +246,7 @@ def compose_thumbnail(artwork: QPixmap | None, size) -> QPixmap:
 class TaskbarIntegration(QObject):
     """Owns the taskbar button and its thumbnail toolbar for one window."""
 
-    command = pyqtSignal(str)   # 'previous' | 'play_pause' | 'next'
+    command = pyqtSignal(str)  # 'previous' | 'play_pause' | 'next'
 
     def __init__(self, window):
         super().__init__(window)
@@ -269,10 +294,8 @@ class TaskbarIntegration(QObject):
 
             self._thumbbar = QWinThumbnailToolBar(self)
             self._thumbbar.setWindow(handle)
-            self._thumbbar.iconicThumbnailPixmapRequested.connect(
-                self._send_thumbnail)
-            self._thumbbar.iconicLivePreviewPixmapRequested.connect(
-                self._send_live_preview)
+            self._thumbbar.iconicThumbnailPixmapRequested.connect(self._send_thumbnail)
+            self._thumbbar.iconicLivePreviewPixmapRequested.connect(self._send_live_preview)
         except Exception:
             logger.exception('Taskbar integration unavailable')
             self._button = None
@@ -288,9 +311,11 @@ class TaskbarIntegration(QObject):
         """Artwork is the undecorated cover, or None."""
         self._artwork = artwork
         self._status = status
-        self._enabled = {'previous': can_previous,
-                         'play_pause': can_play_pause,
-                         'next': can_next}
+        self._enabled = {
+            'previous': can_previous,
+            'play_pause': can_play_pause,
+            'next': can_next,
+        }
         self._refresh()
 
     def clear(self):
@@ -323,8 +348,7 @@ class TaskbarIntegration(QObject):
             self._create_buttons()
             for key, button in self._buttons.items():
                 button.setEnabled(self._enabled[key])
-            self._buttons['play_pause'].setIcon(
-                _transport_icon('pause' if self._status == 'play' else 'play'))
+            self._buttons['play_pause'].setIcon(_transport_icon('pause' if self._status == 'play' else 'play'))
         else:
             self._destroy_buttons()
 
@@ -338,9 +362,11 @@ class TaskbarIntegration(QObject):
         """Add the transport buttons, if they are not already there."""
         if self._buttons or self._thumbbar is None:
             return
-        for name, glyph, tip in (('previous', 'previous', 'Previous'),
-                                 ('play_pause', 'play', 'Play / Pause'),
-                                 ('next', 'next', 'Next')):
+        for name, glyph, tip in (
+            ('previous', 'previous', 'Previous'),
+            ('play_pause', 'play', 'Play / Pause'),
+            ('next', 'next', 'Next'),
+        ):
             button = QWinThumbnailToolButton(self._thumbbar)
             button.setToolTip(tip)
             button.setIcon(_transport_icon(glyph))
@@ -349,8 +375,7 @@ class TaskbarIntegration(QObject):
             # wanting next means re-hovering otherwise.
             button.setDismissOnClick(False)
             button.setEnabled(False)
-            button.clicked.connect(
-                lambda _=False, key=name: self.command.emit(key))
+            button.clicked.connect(lambda _=False, key=name: self.command.emit(key))
             self._thumbbar.addButton(button)
             self._buttons[name] = button
         logger.debug('Thumbnail toolbar buttons created')
@@ -397,11 +422,16 @@ class TaskbarIntegration(QObject):
             # On and unchanged: nothing re-arms what is already armed.
             return
 
-        _set_iconic_attributes(int(self._window.winId()), enabled,
-                               invalidate=changed)
+        _set_iconic_attributes(
+            int(self._window.winId()),
+            enabled,
+            invalidate=changed,
+        )
         if changed:
-            logger.debug('Iconic hover preview -> %s',
-                         'artwork' if enabled else 'window capture')
+            logger.debug(
+                'Iconic hover preview -> %s',
+                'artwork' if enabled else 'window capture',
+            )
 
     def set_progress(self, fraction, playing):
         """Position through the track, 0.0-1.0, or None for no position."""
@@ -458,25 +488,24 @@ class TaskbarIntegration(QObject):
         which is exactly the question being asked.
         """
         artwork = self._artwork
-        if not (settings.taskbar_artwork_icon()
-                and artwork is not None
-                and not artwork.isNull()):
+        if not (settings.taskbar_artwork_icon() and artwork is not None and not artwork.isNull()):
             artwork = None
 
         key = artwork.cacheKey() if artwork is not None else None
         if key == self._icon_key:
             return
         self._icon_key = key
-        self._window.setWindowIcon(
-            _icon_from_artwork(artwork) if artwork is not None else self._app_icon)
+        self._window.setWindowIcon(_icon_from_artwork(artwork) if artwork is not None else self._app_icon)
 
     def _push_thumbnail(self):
         if self._thumbbar is None or not self._iconic_enabled:
             return
         self._thumbbar.setIconicThumbnailPixmap(
-            compose_thumbnail(self._artwork, THUMBNAIL_SIZE))
+            compose_thumbnail(self._artwork, THUMBNAIL_SIZE),
+        )
         self._thumbbar.setIconicLivePreviewPixmap(
-            compose_thumbnail(self._artwork, LIVE_PREVIEW_SIZE))
+            compose_thumbnail(self._artwork, LIVE_PREVIEW_SIZE),
+        )
 
     # Windows asks for these; it does not always stop asking the moment the
     # attributes are cleared. Answering anyway is what made disabling look
@@ -490,14 +519,16 @@ class TaskbarIntegration(QObject):
             logger.debug('Thumbnail requested while off - refused')
             return
         self._thumbbar.setIconicThumbnailPixmap(
-            compose_thumbnail(self._artwork, THUMBNAIL_SIZE))
+            compose_thumbnail(self._artwork, THUMBNAIL_SIZE),
+        )
 
     def _send_live_preview(self):
         if not self._iconic_enabled:
             logger.debug('Live preview requested while off - refused')
             return
         self._thumbbar.setIconicLivePreviewPixmap(
-            compose_thumbnail(self._artwork, LIVE_PREVIEW_SIZE))
+            compose_thumbnail(self._artwork, LIVE_PREVIEW_SIZE),
+        )
 
 
 def _transport_icon(kind: str) -> QIcon:

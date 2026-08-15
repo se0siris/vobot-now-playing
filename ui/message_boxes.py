@@ -1,15 +1,14 @@
 from PyQt5.Qt import QWIDGETSIZE_MAX
 from PyQt5.QtCore import QEvent
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QMessageBox, QSpacerItem, QSizePolicy, QApplication, QTextEdit, QLabel
+from PyQt5.QtWidgets import QApplication, QLabel, QMessageBox, QSizePolicy, QSpacerItem, QTextEdit
 
 __author__ = 'Gary Hughes'
 
 
 class ResizeableMessageBox(QMessageBox):
-
     def __init__(self, *args, **kwargs):
-        super(ResizeableMessageBox, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.setSizeGripEnabled(True)
 
         self.fixed_width_font = QFont()
@@ -36,11 +35,12 @@ class ResizeableMessageBox(QMessageBox):
             lbl_informative = self.findChild(QLabel, name='qt_msgbox_informativelabel')
             lbl_informative.setMinimumWidth(400)
 
-        return super(ResizeableMessageBox, self).event(event)
+        return super().event(event)
 
 
-def message_box_ok_cancel(text, informative_text, title=None, icon=QMessageBox.Critical, verb_pos=None, verb_neg=None,
-                          allow_abort=False):
+def message_box_ok_cancel(
+    text, informative_text, title=None, icon=QMessageBox.Critical, verb_pos=None, verb_neg=None, allow_abort=False
+):
     msg_box = QMessageBox()
     msg_box.setText(f'<b>{text:s}</b>')
     if informative_text:
@@ -86,7 +86,7 @@ def message_box_ok(text, informative_text, title=None, icon=QMessageBox.Informat
     if title:
         msg_box.setWindowTitle(title)
     else:
-        msg_box.setWindowTitle((QApplication.instance().applicationName()))
+        msg_box.setWindowTitle(QApplication.instance().applicationName())
     msg_box.setStandardButtons(QMessageBox.Ok)
     msg_box.setDefaultButton(QMessageBox.Ok)
     horizontal_spacer = QSpacerItem(400, 0, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -104,7 +104,7 @@ def message_box_yes_no(text, informative_text, title=None, icon=QMessageBox.Ques
     if title:
         msg_box.setWindowTitle(title)
     else:
-        msg_box.setWindowTitle((QApplication.instance().applicationName()))
+        msg_box.setWindowTitle(QApplication.instance().applicationName())
     msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
     msg_box.setDefaultButton(QMessageBox.Yes)
     horizontal_spacer = QSpacerItem(400, 0, QSizePolicy.Minimum, QSizePolicy.Expanding)
@@ -127,7 +127,7 @@ def message_box_error(text, informative_text, title=None, detailed_text=None, ic
     if title:
         msg_box.setWindowTitle(title)
     else:
-        msg_box.setWindowTitle((QApplication.instance().applicationName()))
+        msg_box.setWindowTitle(QApplication.instance().applicationName())
     msg_box.setStandardButtons(QMessageBox.Ok)
     msg_box.setDefaultButton(QMessageBox.Ok)
     return msg_box.exec_()

@@ -1,15 +1,15 @@
 """Device address and window behaviour, persisted to QSettings."""
+
 import logging
 
-from PyQt5.QtCore import QThreadPool, QRunnable, QObject, pyqtSignal, pyqtSlot, Qt
-from PyQt5.QtWidgets import QDialog, QApplication, QInputDialog
+from PyQt5.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal, pyqtSlot
+from PyQt5.QtWidgets import QApplication, QDialog, QInputDialog
 
 import discovery
 import settings
-
 from device_link import SendResult, explain_socket_error, probe
-from ui.Ui_settings_dialog import Ui_SettingsDialog
 from ui.theme import restyle, use_dark_titlebar
+from ui.Ui_settings_dialog import Ui_SettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class _Task(QRunnable):
     """
 
     def __init__(self, work, *args, default=None):
-        super(_Task, self).__init__()
+        super().__init__()
         self._work = work
         self._args = args
         self._default = default
@@ -45,9 +45,8 @@ class _Task(QRunnable):
 
 
 class SettingsDialog(QDialog, Ui_SettingsDialog):
-
     def __init__(self, parent=None):
-        super(SettingsDialog, self).__init__(parent)
+        super().__init__(parent)
         self.setupUi(self)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.setWindowTitle(f'{QApplication.applicationName()} - Settings')
@@ -107,8 +106,12 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         self.button_test.setEnabled(False)
         self._set_test_result('Checking...', None)
 
-        task = _Task(probe, self.host, self.port,
-                     default=SendResult(False, 'Check failed'))
+        task = _Task(
+            probe,
+            self.host,
+            self.port,
+            default=SendResult(False, 'Check failed'),
+        )
         task.signals.finished.connect(self.on_probe_finished)
         self._pool.start(task)
 
@@ -128,8 +131,9 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
 
         if not devices:
             self._set_test_result(
-                'No dock answered. Check it is powered on, on the same network, '
-                'and running the Now Playing app.', 'error')
+                'No dock answered. Check it is powered on, on the same network, and running the Now Playing app.',
+                'error',
+            )
             return
 
         device = devices[0]
@@ -147,9 +151,13 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
     def _choose_device(self, devices):
         labels = [device.label for device in devices]
         choice, accepted = QInputDialog.getItem(
-            self, f'{QApplication.applicationName()} - Choose a dock',
+            self,
+            f'{QApplication.applicationName()} - Choose a dock',
             f'{len(devices)} docks answered. Which one should be used?',
-            labels, 0, False)
+            labels,
+            0,
+            False,
+        )
         if not accepted:
             return None
         return devices[labels.index(choice)]
@@ -161,13 +169,17 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
             self._set_test_result('Device is listening.', 'ok')
         else:
             self._set_test_result(
-                explain_socket_error(result.error or 'No response.'), 'error')
+                explain_socket_error(result.error or 'No response.'),
+                'error',
+            )
 
     def accept(self):
         # An empty address is allowed only when something will go and find one.
         if not self.host and not self.check_auto_discover.isChecked():
             self._set_test_result(
-                'Enter an address, or turn on automatic discovery.', 'error')
+                'Enter an address, or turn on automatic discovery.',
+                'error',
+            )
             self.edit_host.setFocus()
             return
 
@@ -182,7 +194,10 @@ class SettingsDialog(QDialog, Ui_SettingsDialog):
         settings.set_taskbar_media_controls(self.check_taskbar_media.isChecked())
         settings.set_taskbar_artwork_icon(self.check_taskbar_artwork.isChecked())
         settings.set_taskbar_progress(self.check_taskbar_progress.isChecked())
-        logger.info('Settings saved: device %s:%d, ambient light %s',
-                    self.host, self.port,
-                    'on' if self.check_ambient_light.isChecked() else 'off')
-        super(SettingsDialog, self).accept()
+        logger.info(
+            'Settings saved: device %s:%d, ambient light %s',
+            self.host,
+            self.port,
+            'on' if self.check_ambient_light.isChecked() else 'off',
+        )
+        super().accept()

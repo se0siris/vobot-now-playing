@@ -3,8 +3,6 @@
 .venv/
 build/
 dist/
-/apps/
-/apps
 *.pyc
 *.ini
 *.log

@@ -1,7 +1,6 @@
-from ctypes import windll, c_int64
-
-import sys
 import os
+import sys
+from ctypes import c_int64, windll
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
@@ -42,7 +41,7 @@ app = QApplication(sys.argv)
 if is_frozen:
     app.addLibraryPath(
         os.path.normpath(
-            os.path.join(sys._MEIPASS, 'PyQt5/Qt/plugins')
+            os.path.join(sys._MEIPASS, 'PyQt5/Qt/plugins'),
         )
     )
 

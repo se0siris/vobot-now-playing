@@ -8,6 +8,7 @@ The segment holds the owner's PID, so a second launch can say who is already
 running. On Windows the kernel reference-counts the mapping and frees it when
 the last handle closes, so a hard crash cannot leave a stale lock behind.
 """
+
 import getpass
 import logging
 import struct
@@ -50,8 +51,7 @@ def claim() -> int | None:
     if segment.error() != QSharedMemory.AlreadyExists:
         # Something else went wrong - out of handles, sandbox policy, and so on.
         # Refusing to start over an unclear failure is worse than allowing it.
-        logger.warning('Could not claim the instance lock (%s); starting anyway',
-                       segment.errorString())
+        logger.warning('Could not claim the instance lock (%s); starting anyway', segment.errorString())
         return None
 
     return _read_pid(segment)
@@ -77,8 +77,7 @@ def _write_pid(segment: QSharedMemory) -> None:
 
 def _read_pid(segment: QSharedMemory) -> int:
     if not segment.attach(QSharedMemory.ReadOnly):
-        logger.warning('Another instance holds the lock but it could not be read (%s)',
-                       segment.errorString())
+        logger.warning('Another instance holds the lock but it could not be read (%s)', segment.errorString())
         return 0
 
     segment.lock()

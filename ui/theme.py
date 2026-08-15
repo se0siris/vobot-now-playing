@@ -8,8 +8,8 @@ native-drawn widgets dark-on-dark.
 Blues are lifted from the Mini Dock app icon so the two halves of the project
 look related.
 """
-import logging
 
+import logging
 from ctypes import byref, c_int, sizeof, windll
 
 from PyQt5.QtGui import QColor, QPalette
@@ -338,15 +338,22 @@ def apply_theme(app) -> None:
 def _colorref(hex_colour: str) -> int:
     """Qt-style '#rrggbb' to the 0x00bbggrr COLORREF that DWM wants."""
     value = hex_colour.lstrip('#')
-    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+    red, green, blue = (int(value[i : i + 2], 16) for i in (0, 2, 4))
     return (blue << 16) | (green << 8) | red
 
 
 def _set_dwm_attribute(hwnd: int, attribute: int, value: int) -> bool:
     try:
         stored = c_int(value)
-        return windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, attribute, byref(stored), sizeof(stored)) == 0
+        return (
+            windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                byref(stored),
+                sizeof(stored),
+            )
+            == 0
+        )
     except (AttributeError, OSError):
         return False
 
@@ -361,18 +368,19 @@ def use_dark_titlebar(widget) -> None:
     """
     hwnd = int(widget.winId())
 
-    for attribute in (DWMWA_USE_IMMERSIVE_DARK_MODE,
-                      DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY):
+    for attribute in (DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY):
         if _set_dwm_attribute(hwnd, attribute, 1):
             break
     else:
         logger.debug('DWM would not switch the title bar to dark mode')
 
-    painted = all([
-        _set_dwm_attribute(hwnd, DWMWA_CAPTION_COLOR, _colorref(BACKGROUND)),
-        _set_dwm_attribute(hwnd, DWMWA_TEXT_COLOR, _colorref(TEXT)),
-        _set_dwm_attribute(hwnd, DWMWA_BORDER_COLOR, _colorref(BORDER)),
-    ])
+    painted = all(
+        [
+            _set_dwm_attribute(hwnd, DWMWA_CAPTION_COLOR, _colorref(BACKGROUND)),
+            _set_dwm_attribute(hwnd, DWMWA_TEXT_COLOR, _colorref(TEXT)),
+            _set_dwm_attribute(hwnd, DWMWA_BORDER_COLOR, _colorref(BORDER)),
+        ]
+    )
     if not painted:
         logger.debug('Caption colours need Windows 11; leaving the frame alone')
 

@@ -2,10 +2,10 @@
 chosen one into the RGB565 frame the Mini Dock draws, and reading a colour off
 it for the dock's ambient light.
 """
+
 import colorsys
 import hashlib
 import logging
-
 from io import BytesIO
 
 from PIL import Image, ImageChops
@@ -32,11 +32,11 @@ def to_rgb565_bytes(image: Image.Image) -> bytes:
     red, green, blue = image.split()
     high = ImageChops.add(
         red.point(lambda v: v & 0xF8),
-        green.point(lambda v: v >> 5)
+        green.point(lambda v: v >> 5),
     )
     low = ImageChops.add(
         green.point(lambda v: (v & 0x1C) << 3),
-        blue.point(lambda v: v >> 3)
+        blue.point(lambda v: v >> 3),
     )
     return Image.merge('LA', (low, high)).tobytes()
 
@@ -54,8 +54,11 @@ def resize_thumbnail(thumbnail_bytes, size=FRAME_SIZE_DEFAULT):
         with Image.open(BytesIO(thumbnail_bytes)) as opened:
             image = opened.convert('RGB')
     except Exception:
-        logger.warning('Could not decode %d bytes of artwork; treating it as none',
-                       len(thumbnail_bytes), exc_info=True)
+        logger.warning(
+            'Could not decode %d bytes of artwork; treating it as none',
+            len(thumbnail_bytes),
+            exc_info=True,
+        )
         return None, 0, 0
     # Scale to fit the panel, enlarging as well as shrinking. Image.thumbnail()
     # only ever shrinks, and sources publish artwork far smaller than the panel
@@ -158,32 +161,42 @@ def dominant_colour(thumbnail_bytes) -> tuple[int, int, int] | None:
         return None
     try:
         with Image.open(BytesIO(thumbnail_bytes)) as opened:
-            sample = opened.convert('RGB').resize(COLOUR_SAMPLE_SIZE,
-                                                  Resampling.BILINEAR)
+            sample = opened.convert('RGB').resize(
+                COLOUR_SAMPLE_SIZE,
+                Resampling.BILINEAR,
+            )
             # FASTOCTREE over the default median cut: it returns the colours
             # actually present rather than interpolating new ones, which is what
             # is wanted when the answer is "which colour is this cover".
-            quantised = sample.quantize(colors=COLOUR_CLUSTERS,
-                                        method=Image.Quantize.FASTOCTREE)
+            quantised = sample.quantize(
+                colors=COLOUR_CLUSTERS,
+                method=Image.Quantize.FASTOCTREE,
+            )
             palette = quantised.getpalette()
             counts = quantised.getcolors()
     except Exception:
-        logger.warning('Could not read a colour from %d bytes of artwork',
-                       len(thumbnail_bytes), exc_info=True)
+        logger.warning(
+            'Could not read a colour from %d bytes of artwork',
+            len(thumbnail_bytes),
+            exc_info=True,
+        )
         return None
 
     if not counts or not palette:
         return None
 
-    best = None          # best cluster that has a hue - always wins if one exists
+    best = None  # best cluster that has a hue - always wins if one exists
     best_score = 0.0
-    plain = None         # largest colourless one, for a cover that has no hue
+    plain = None  # largest colourless one, for a cover that has no hue
     plain_count = -1
 
     for count, index in counts:
-        red, green, blue = palette[index * 3:index * 3 + 3]
-        hue, saturation, value = colorsys.rgb_to_hsv(red / 255, green / 255,
-                                                     blue / 255)
+        red, green, blue = palette[index * 3 : index * 3 + 3]
+        hue, saturation, value = colorsys.rgb_to_hsv(
+            red / 255,
+            green / 255,
+            blue / 255,
+        )
         if value < COLOUR_MIN_VALUE:
             continue
         if saturation < COLOUR_ACHROMATIC:
@@ -202,7 +215,7 @@ def dominant_colour(thumbnail_bytes) -> tuple[int, int, int] | None:
         # cluster there is, so something goes out rather than nothing.
         if plain is None:
             index = max(counts)[1]
-            red, green, blue = palette[index * 3:index * 3 + 3]
+            red, green, blue = palette[index * 3 : index * 3 + 3]
             plain = colorsys.rgb_to_hsv(red / 255, green / 255, blue / 255)
         best = plain
 
@@ -210,7 +223,10 @@ def dominant_colour(thumbnail_bytes) -> tuple[int, int, int] | None:
     if saturation >= COLOUR_ACHROMATIC:
         saturation = max(saturation, COLOUR_MIN_SATURATION)
     red, green, blue = colorsys.hsv_to_rgb(
-        hue, saturation, max(value, COLOUR_MIN_BRIGHTNESS))
+        hue,
+        saturation,
+        max(value, COLOUR_MIN_BRIGHTNESS),
+    )
     colour = (round(red * 255), round(green * 255), round(blue * 255))
     logger.debug('Artwork reads as %s', colour)
     return colour
@@ -227,6 +243,7 @@ def thumbnail_rank(thumbnail_bytes) -> tuple[int, int]:
         with Image.open(BytesIO(thumbnail_bytes)) as image:
             width, height = image.size
     except Exception:
+        logger.warning('Could not read a size from %d bytes of artwork', len(thumbnail_bytes), exc_info=True)
         width = height = 0
     return width * height, len(thumbnail_bytes)
 
@@ -329,7 +346,7 @@ class ArtworkPicker:
         """
         if not self._previous_seen:
             return
-        logger.debug('Keeping artwork %s as this track\'s own', self._best_rank)
+        logger.debug("Keeping artwork %s as this track's own", self._best_rank)
         self._previous_seen = frozenset()
 
     def reset(self):
@@ -366,12 +383,15 @@ class ArtworkPicker:
         #
         # Two tracks that genuinely share a cover are unaffected: that read is
         # the one already held, so it falls through to the ranking below.
-        if (self._best_id is not None
-                and self._best_id in self._previous_seen
-                and art_id != self._best_id
-                and art_id not in self._previous_seen):
-            logger.debug('Artwork %s is this track\'s own; replacing the previous '
-                         'track\'s, held at %s', rank, self._best_rank)
+        if (
+            self._best_id is not None
+            and self._best_id in self._previous_seen
+            and art_id != self._best_id
+            and art_id not in self._previous_seen
+        ):
+            logger.debug(
+                "Artwork %s is this track's own; replacing the previous track's, held at %s", rank, self._best_rank
+            )
             # One swap per track: past here the held artwork is this track's,
             # and the ordinary ranking protects it from the placeholder.
             self._previous_seen = frozenset()
@@ -385,8 +405,12 @@ class ArtworkPicker:
             # Equal ranks land here too, which is deliberate: re-sending the
             # same artwork would restart the device's scroll animation.
             how = 'no better than' if rank == self._best_rank else 'worse than'
-            logger.debug('Incoming artwork %s is %s held %s; keeping it',
-                         rank, how, self._best_rank)
+            logger.debug(
+                'Incoming artwork %s is %s held %s; keeping it',
+                rank,
+                how,
+                self._best_rank,
+            )
             if art_id == self._best_id:
                 # The source served the same image again, which is the
                 # confirmation settled() waits for.
@@ -413,9 +437,7 @@ class FrameCache:
         self._size: tuple[int, int] = (0, 0)
 
     def frame_for(self, thumbnail_bytes, art_id, target_size):
-        if (art_id == self._art_id
-                and self._frame is not None
-                and self._size == target_size):
+        if art_id == self._art_id and self._frame is not None and self._size == target_size:
             return self._frame, target_size[0], target_size[1]
 
         frame, width, height = resize_thumbnail(thumbnail_bytes, target_size)

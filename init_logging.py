@@ -1,5 +1,5 @@
-import sys
 import logging
+import sys
 
 is_frozen = getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
 
@@ -13,35 +13,35 @@ def setup_logging(ignore_frozen=False):
             fmt='%(asctime)s | %(module)-16s | %(levelname)-8s | %(message)s',
             field_styles={
                 'asctime': {
-                    'color': 'cyan'
+                    'color': 'cyan',
                 },
                 'module': {
-                    'color': 'magenta'
+                    'color': 'magenta',
                 },
                 'levelname': {
                     'color': 'white',
-                    'bold': True
-                }
+                    'bold': True,
+                },
             },
             level_styles={
                 'critical': {
                     'bold': True,
-                    'color': 'red'
+                    'color': 'red',
                 },
                 'debug': {
                     'color': 'green',
-                    'faint': True
+                    'faint': True,
                 },
                 'error': {
-                    'color': 'red'
+                    'color': 'red',
                 },
                 'info': {
-                    'color': 'blue'
+                    'color': 'blue',
                 },
                 'warning': {
-                    'color': 'yellow'
-                }
-            }
+                    'color': 'yellow',
+                },
+            },
         )
 
 

@@ -1,4 +1,5 @@
 """Locating bundled files, both when running from source and when frozen."""
+
 import os
 import sys
 

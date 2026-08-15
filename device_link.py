@@ -3,14 +3,13 @@
 Header is one line of JSON; the device replies with a JSON ack that says whether
 it already holds the artwork, and reports its own panel geometry.
 """
+
 import json
 import logging
 import socket
-
 from dataclasses import dataclass
 
 import settings
-
 from constants import (
     FRAME_SIZE_DEFAULT,
     PROTOCOL_VERSION,
@@ -24,6 +23,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class SendResult:
     """Outcome of a push, carrying enough detail for the UI to explain itself."""
+
     ok: bool
     error: str | None = None
 
@@ -126,7 +126,7 @@ class DeviceLink:
                 # Device is now known to hold this artwork (or none at all).
                 self._device_art_id = art_id
                 return SendResult(True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any failure here just means "resend everything"
             # Force a full resend once the device is reachable again.
             self._device_art_id = None
             logger.warning('Send to %s:%d failed: %s', self.host, self.port, exc)
@@ -144,7 +144,7 @@ def probe(host: str, port: int, timeout: float = TCP_TIMEOUT) -> SendResult:
             sock.settimeout(timeout)
             sock.connect((host, port))
         return SendResult(True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a probe that can't say why is still "not reachable"
         logger.debug('Probe of %s:%d failed: %s', host, port, exc)
         return SendResult(False, describe_socket_error(exc))
 
@@ -171,7 +171,7 @@ def describe_socket_error(exc: Exception) -> str:
 ERROR_ADVICE = {
     'Timed out': 'The dock did not answer. Check it is awake and on the same network.',
     'Connection refused': 'Something answered, but nothing is listening on that port. '
-                          'Check the Now Playing app is running on the dock.',
+    'Check the Now Playing app is running on the dock.',
     'Unknown address': 'That host name could not be resolved. Check the address.',
     'Network unreachable': 'No route to that address. Check the dock is on your network.',
 }

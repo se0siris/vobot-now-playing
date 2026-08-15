@@ -1,6 +1,6 @@
 import logging
 
-from PyQt5.QtCore import QEvent, QRectF, QThread, QTimer, Qt, pyqtSlot
+from PyQt5.QtCore import QEvent, QRectF, Qt, QThread, QTimer, pyqtSlot
 from PyQt5.QtGui import QIcon, QPainter, QPainterPath, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -12,15 +12,14 @@ from PyQt5.QtWidgets import (
 )
 
 import settings
-
 from device_link import explain_socket_error
 from paths import APP_ICON
 from ui.about_dialog import AboutDialog
-from ui.Ui_mainwindow import Ui_MainWindow
 from ui.notifications import NotificationsWrapper
 from ui.settings_dialog import SettingsDialog
 from ui.taskbar import TaskbarIntegration
 from ui.theme import restyle, use_dark_titlebar
+from ui.Ui_mainwindow import Ui_MainWindow
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +29,9 @@ ART_RADIUS = 10
 # Geometric Shapes block, so these render in Segoe UI without falling back to
 # an emoji font.
 STATUS_GLYPHS = {
-    'PLAYING': '▶',        # right-pointing triangle
-    'PAUSED': '▮▮',   # two vertical bars
-    'STOPPED': '■',        # filled square
+    'PLAYING': '▶',  # right-pointing triangle
+    'PAUSED': '▮▮',  # two vertical bars
+    'STOPPED': '■',  # filled square
 }
 
 # The transport button reuses the status glyphs, so the two can never drift.
@@ -126,9 +125,8 @@ def placeholder_pixmap(icon: QIcon, size: int, device_pixel_ratio: float = 1.0) 
 
 
 class MainWindow(QMainWindow, Ui_MainWindow):
-
     def __init__(self):
-        super(MainWindow, self).__init__()
+        super().__init__()
         self.setupUi(self)
         self.setWindowTitle(QApplication.applicationName())
 
@@ -405,9 +403,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # After set_artwork, which is what refreshes _art_source.
         self.taskbar.set_track(
             self._art_source,
-            'play' if track.is_playing else
-            ('pause' if track.status == 'PAUSED' else 'stop'),
-            track.can_previous, track.can_next, track.can_play_pause)
+            'play' if track.is_playing else ('pause' if track.status == 'PAUSED' else 'stop'),
+            track.can_previous,
+            track.can_next,
+            track.can_play_pause,
+        )
 
     @staticmethod
     def _set_optional(label, text):
@@ -465,7 +465,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         logger.debug('Received thumbnail (%d KB)', len(thumb_bytes) // 1024)
         self._art_source = source
         self._art_pixmap = rounded_pixmap(
-            source, ART_SIZE, ART_RADIUS, self.devicePixelRatioF())
+            source,
+            ART_SIZE,
+            ART_RADIUS,
+            self.devicePixelRatioF(),
+        )
         self.lbl_art.setPixmap(self._art_pixmap)
         self.lbl_art.setProperty('has_art', 'true')
         restyle(self.lbl_art)
@@ -519,9 +523,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # ticking. A hidden window has no taskbar button at all, so it does not.
         on_screen = self.isVisible() and not self.isMinimized()
         on_taskbar = self.isVisible() and self.taskbar.shows_progress
-        should_run = (self._timeline is not None
-                      and self._timeline_playing
-                      and (on_screen or on_taskbar))
+        should_run = self._timeline is not None and self._timeline_playing and (on_screen or on_taskbar)
         if should_run == self._progress_timer.isActive():
             return
         if should_run:
@@ -550,12 +552,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.progress_position.setValue(round(fraction * PROGRESS_STEPS))
         self.lbl_elapsed.setText(format_duration(position - timeline.start))
         self.lbl_duration.setText(format_duration(span))
-        self.taskbar.set_progress(fraction if span > 0 else None,
-                                  self._timeline_playing)
+        self.taskbar.set_progress(
+            fraction if span > 0 else None,
+            self._timeline_playing,
+        )
 
     def show_placeholder_art(self):
         self.lbl_art.setPixmap(
-            placeholder_pixmap(self.app_icon, ART_SIZE, self.devicePixelRatioF()))
+            placeholder_pixmap(self.app_icon, ART_SIZE, self.devicePixelRatioF()),
+        )
         self.lbl_art.setProperty('has_art', 'false')
         restyle(self.lbl_art)
 
@@ -599,7 +604,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     # needs no catch-up beyond a redraw: the anchor is timestamped.
 
     def showEvent(self, event):
-        super(MainWindow, self).showEvent(event)
+        super().showEvent(event)
         # First show is where windowHandle() finally exists, which is what the
         # taskbar button and thumbnail toolbar both need. No-ops after that.
         self.taskbar.attach()
@@ -607,11 +612,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.sync_progress_timer()
 
     def hideEvent(self, event):
-        super(MainWindow, self).hideEvent(event)
+        super().hideEvent(event)
         self.sync_progress_timer()
 
     def changeEvent(self, event):
-        super(MainWindow, self).changeEvent(event)
+        super().changeEvent(event)
         # Minimising does not hide a window, so hideEvent never fires for it.
         if event.type() == QEvent.WindowStateChange:
             self.refresh_progress()

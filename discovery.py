@@ -5,12 +5,12 @@ actually listening on. The discovery port is fixed rather than following the
 configured TCP port - a client that already knew the port would have nothing to
 discover.
 """
+
 import json
 import logging
 import select
 import socket
 import time
-
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ MAX_REPLY = 1024
 @dataclass(frozen=True)
 class Device:
     """A dock that answered a probe."""
+
     host: str
     port: int
     app: str = ''
@@ -64,8 +65,12 @@ def discover(timeout: float = DEFAULT_TIMEOUT) -> list[Device]:
                     sock.sendto(PROBE, (target, DISCOVERY_PORT))
                 except OSError as exc:
                     # A down or restricted interface is normal; others may work.
-                    logger.debug('Probe from %s to %s failed: %s',
-                                 address, target, exc)
+                    logger.debug(
+                        'Probe from %s to %s failed: %s',
+                        address,
+                        target,
+                        exc,
+                    )
 
         found: dict[str, Device] = {}
         local_prefixes = {_subnet(address) for address in local_addresses}
@@ -104,7 +109,7 @@ def discover(timeout: float = DEFAULT_TIMEOUT) -> list[Device]:
 def _parse_reply(data: bytes, addr) -> Device | None:
     try:
         payload = json.loads(data.decode('utf-8'))
-    except Exception:
+    except Exception:  # noqa: BLE001 - a reply from the network can be malformed in any way
         logger.debug('Ignoring unparseable reply from %s', addr[0])
         return None
 
@@ -187,8 +192,7 @@ def _identity_key(device: Device) -> str:
     return device.device_id or f'{device.host}:{device.port}'
 
 
-def _preferred(existing: Device | None, candidate: Device,
-               local_prefixes: set[str]) -> Device:
+def _preferred(existing: Device | None, candidate: Device, local_prefixes: set[str]) -> Device:
     """Pick between two addresses for the same dock.
 
     An address sharing a /24 with one of our own wins: replies that arrive via
@@ -196,8 +200,7 @@ def _preferred(existing: Device | None, candidate: Device,
     """
     if existing is None:
         return candidate
-    if _in_local_subnet(candidate.host, local_prefixes) and \
-            not _in_local_subnet(existing.host, local_prefixes):
+    if _in_local_subnet(candidate.host, local_prefixes) and not _in_local_subnet(existing.host, local_prefixes):
         return candidate
     return existing
 

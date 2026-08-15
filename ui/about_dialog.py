@@ -5,6 +5,7 @@ disclaimer and licence terms reachable from the interface - the licence text
 itself suggests an about box for a GUI. So the wording below is not decoration,
 and the warranty paragraph in particular should not be trimmed for looks.
 """
+
 import logging
 
 from PyQt5.QtCore import Qt
@@ -22,8 +23,8 @@ from constants import (
     VERSION_NUMBER,
 )
 from paths import APP_ICON
-from ui.Ui_about_dialog import Ui_AboutDialog
 from ui.theme import use_dark_titlebar
+from ui.Ui_about_dialog import Ui_AboutDialog
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,8 @@ ICON_SIZE = 72
 
 
 class AboutDialog(QDialog, Ui_AboutDialog):
-
     def __init__(self, parent=None):
-        super(AboutDialog, self).__init__(parent)
+        super().__init__(parent)
         self.setupUi(self)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.setWindowTitle(f'About {APP_NAME}')
@@ -47,8 +47,7 @@ class AboutDialog(QDialog, Ui_AboutDialog):
         self.lbl_about_author.setText(f'© {COPYRIGHT_YEAR} {AUTHOR}')
 
         # Shown without the scheme, which is noise once it is a link anyway.
-        self.lbl_about_link.setText(
-            f'<a href="{REPO_URL}">{REPO_URL.split("//", 1)[-1]}</a>')
+        self.lbl_about_link.setText(f'<a href="{REPO_URL}">{REPO_URL.split("//", 1)[-1]}</a>')
 
         self.lbl_about_licence.setText(
             f'{APP_NAME} is free software: you can redistribute it and modify '

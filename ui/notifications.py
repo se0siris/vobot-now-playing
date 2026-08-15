@@ -3,21 +3,19 @@
 Runs its own asyncio loop on a worker QThread. Everything it learns is handed to
 the UI as signals; the UI never touches WinRT or the socket itself.
 """
+
 import asyncio
 import logging
 import time
-
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import winrt.windows.media.control as media_control
-import winrt.windows.storage.streams as streams
-
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+from winrt.windows.storage import streams
 
 import discovery
 import settings
-
 from device_link import DeviceLink, SendResult
 from media_image import ArtworkPicker, ColourCache, FrameCache, art_id_for
 
@@ -129,8 +127,9 @@ class Timeline:
     Edge, that extrapolation lands within half a second after a full minute of
     drift, which is well inside a pixel on screen.
     """
-    position: float     # seconds from the start of the media
-    start: float        # usually 0, but a source may report a window
+
+    position: float  # seconds from the start of the media
+    start: float  # usually 0, but a source may report a window
     end: float
     updated_at: datetime
     rate: float = 1.0
@@ -150,7 +149,7 @@ class Timeline:
         if not playing:
             return self.position
 
-        age = ((now or datetime.now(timezone.utc)) - self.updated_at).total_seconds()
+        age = ((now or datetime.now(UTC)) - self.updated_at).total_seconds()
         if not 0.0 <= age <= self.duration:
             # Older than the track is long, or dated in the future: the anchor
             # cannot say anything useful about now, so show what the source
@@ -163,6 +162,7 @@ class Timeline:
 @dataclass(frozen=True)
 class TrackInfo:
     """A snapshot of what Windows says is playing."""
+
     title: str
     artist: str
     album: str
@@ -207,9 +207,7 @@ def _available_controls(playback_info) -> tuple[bool, bool, bool]:
         return (
             bool(controls.is_previous_enabled),
             bool(controls.is_next_enabled),
-            bool(controls.is_play_pause_toggle_enabled
-                 or controls.is_play_enabled
-                 or controls.is_pause_enabled),
+            bool(controls.is_play_pause_toggle_enabled or controls.is_play_enabled or controls.is_pause_enabled),
         )
     except Exception:
         logger.debug('Could not read the available controls', exc_info=True)
@@ -240,7 +238,7 @@ def _read_timeline(session, playback_info) -> Timeline | None:
         if updated_at.tzinfo is None:
             # Documented as UTC, and winrt does tag it - but an untagged one
             # reaching position_at() would raise inside a repaint timer.
-            updated_at = updated_at.replace(tzinfo=timezone.utc)
+            updated_at = updated_at.replace(tzinfo=UTC)
 
         return Timeline(
             position=min(max(timeline.position.total_seconds(), start), end),
@@ -260,18 +258,17 @@ async def get_thumbnail_data(thumbnail):
     if thumbnail is None:
         return None
 
-    with await thumbnail.open_read_async() as stream:
-        with stream.get_input_stream_at(0) as input_stream:
-            # Allocate a buffer.
-            logger.debug('Reading into buffer of size: %d bytes', stream.size)
-            buffer = streams.Buffer(stream.size)
-            read_buffer = await input_stream.read_async(buffer, buffer.capacity, streams.InputStreamOptions.NONE)
+    with await thumbnail.open_read_async() as stream, stream.get_input_stream_at(0) as input_stream:
+        # Allocate a buffer.
+        logger.debug('Reading into buffer of size: %d bytes', stream.size)
+        buffer = streams.Buffer(stream.size)
+        read_buffer = await input_stream.read_async(buffer, buffer.capacity, streams.InputStreamOptions.NONE)
 
-            # Read bytes from IBuffer using DataReader.
-            with streams.DataReader.from_buffer(read_buffer) as data_reader:
-                byte_array = bytearray(read_buffer.length)
-                data_reader.read_bytes(byte_array)
-                return bytes(byte_array)
+        # Read bytes from IBuffer using DataReader.
+        with streams.DataReader.from_buffer(read_buffer) as data_reader:
+            byte_array = bytearray(read_buffer.length)
+            data_reader.read_bytes(byte_array)
+            return bytes(byte_array)
 
 
 class NotificationsWrapper(QObject):
@@ -285,7 +282,7 @@ class NotificationsWrapper(QObject):
     signal_device_discovered = pyqtSignal(str, int)
 
     def __init__(self, parent=None):
-        super(NotificationsWrapper, self).__init__(parent)
+        super().__init__(parent)
         self.device = DeviceLink()
         self._artwork = ArtworkPicker()
         self._frames = FrameCache()
@@ -400,8 +397,11 @@ class NotificationsWrapper(QObject):
             return
         try:
             accepted = await getattr(session, method_name)()
-            logger.info('Transport command %s: %s', command,
-                        'accepted' if accepted else 'refused by the source')
+            logger.info(
+                'Transport command %s: %s',
+                command,
+                'accepted' if accepted else 'refused by the source',
+            )
         except Exception:
             logger.exception('Transport command %s failed', command)
             return
@@ -473,8 +473,7 @@ class NotificationsWrapper(QObject):
             self.device.set_address(host, port)
 
         self._manager = await media_control.GlobalSystemMediaTransportControlsSessionManager.request_async()
-        self._manager_token = self._manager.add_current_session_changed(
-            self._on_current_session_changed)
+        self._manager_token = self._manager.add_current_session_changed(self._on_current_session_changed)
 
         self._bind_session(self._manager.get_current_session())
         self._schedule_refresh()
@@ -484,7 +483,7 @@ class NotificationsWrapper(QObject):
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=POLL_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 self._schedule_refresh(poll=True)
 
         # Detach before cancelling: a handler that fired in between would
@@ -534,8 +533,7 @@ class NotificationsWrapper(QObject):
 
         self._session = session
         self._session_tokens = None
-        self._session_id = (session.source_app_user_model_id
-                            if session is not None else None)
+        self._session_id = session.source_app_user_model_id if session is not None else None
 
         if session is None:
             logger.info('No active media session.')
@@ -559,8 +557,7 @@ class NotificationsWrapper(QObject):
             return
 
         session = self._manager.get_current_session()
-        new_id = (session.source_app_user_model_id
-                  if session is not None else None)
+        new_id = session.source_app_user_model_id if session is not None else None
 
         if new_id is not None and new_id == self._session_id:
             # Same player, but usually a brand new session object: a source that
@@ -576,8 +573,11 @@ class NotificationsWrapper(QObject):
             return
 
         if self._session_id is not None:
-            logger.debug('Session %s went away; holding its state for %.1fs',
-                         self._session_id, SESSION_GRACE_SECONDS)
+            logger.debug(
+                'Session %s went away; holding its state for %.1fs',
+                self._session_id,
+                SESSION_GRACE_SECONDS,
+            )
             self._session_grace = asyncio.create_task(self._await_session_return())
             return
 
@@ -599,14 +599,16 @@ class NotificationsWrapper(QObject):
             return
 
         session = self._manager.get_current_session()
-        new_id = (session.source_app_user_model_id
-                  if session is not None else None)
+        new_id = session.source_app_user_model_id if session is not None else None
         if new_id == self._session_id:
             # Back without ever raising the event that would have told us.
             logger.debug('Session %s is back', self._session_id)
         else:
-            logger.debug('Session %s did not return; following %s',
-                         self._session_id, new_id)
+            logger.debug(
+                'Session %s did not return; following %s',
+                self._session_id,
+                new_id,
+            )
         self._adopt_session(session)
 
     def _cancel_session_grace(self):
@@ -636,11 +638,9 @@ class NotificationsWrapper(QObject):
         # its artwork stay exactly as they are. Without it that push looks like a
         # repeat and is dropped for up to HEARTBEAT_SECONDS. It is a tuple or
         # None for the same reason - this key has to be hashable.
-        payload_key = tuple(payload.get(key) for key in
-                            ('status', 'title', 'artist', 'album', 'art_id', 'light'))
+        payload_key = tuple(payload.get(key) for key in ('status', 'title', 'artist', 'album', 'art_id', 'light'))
         now = time.monotonic()
-        if (payload_key == self._last_sent_key
-                and now - self._last_sent_at < HEARTBEAT_SECONDS):
+        if payload_key == self._last_sent_key and now - self._last_sent_at < HEARTBEAT_SECONDS:
             logger.debug('No change since last push; skipping')
             return
 
@@ -741,9 +741,11 @@ class NotificationsWrapper(QObject):
                 # poll - this repeats every 10s for as long as the session stays
                 # current, and would bury everything else in the log.
                 self._unreadable_session = session_id
-                logger.info('Session %s will not report what it is playing; '
-                            'treating it as nothing playing', session_id,
-                            exc_info=True)
+                logger.info(
+                    'Session %s will not report what it is playing; treating it as nothing playing',
+                    session_id,
+                    exc_info=True,
+                )
             else:
                 logger.debug('Session %s is still unreadable', session_id)
             return None
@@ -819,9 +821,9 @@ class NotificationsWrapper(QObject):
             # the thumbnail belongs to the title beside it, and stopping on the
             # strength of one would strand the previous track's cover here for
             # the rest of the song. See ArtworkPicker.
-            holding_good_art = (self._artwork.key == track_key
-                                and self._artwork.settled
-                                and self._artwork.best_area >= GOOD_ART_AREA)
+            holding_good_art = (
+                self._artwork.key == track_key and self._artwork.settled and self._artwork.best_area >= GOOD_ART_AREA
+            )
             if poll and holding_good_art:
                 thumb_bytes = self._artwork.current
             else:
@@ -845,8 +847,10 @@ class NotificationsWrapper(QObject):
             # in the window until the replacement arrives. Whatever moved the
             # session has already asked for a refresh of its own, so drop this one.
             if self._session is not session or self._session_grace is not None:
-                logger.debug('Session changed while reading %r; dropping the read',
-                             title)
+                logger.debug(
+                    'Session changed while reading %r; dropping the read',
+                    title,
+                )
                 return
 
             art_id = art_id_for(thumb_bytes)
@@ -867,23 +871,29 @@ class NotificationsWrapper(QObject):
             # genuinely has no artwork does end up saying so - just later. Only
             # safe while the dock's artwork is known: a fresh link or a failed
             # send leaves it holding something we cannot name.
-            artwork_pending = (self.device.device_art_id is not None
-                               and self._chases < ARTWORK_CHASE_LIMIT
-                               and (self._artwork.holding_leftover
-                                    or thumb_bytes is None))
+            artwork_pending = (
+                self.device.device_art_id is not None
+                and self._chases < ARTWORK_CHASE_LIMIT
+                and (self._artwork.holding_leftover or thumb_bytes is None)
+            )
 
             if artwork_pending:
-                logger.debug('%s; leaving the dock on %s',
-                             'Artwork is still the previous track\'s'
-                             if self._artwork.holding_leftover
-                             else 'No artwork published for this track yet',
-                             self.device.device_art_id)
+                logger.debug(
+                    '%s; leaving the dock on %s',
+                    "Artwork is still the previous track's"
+                    if self._artwork.holding_leftover
+                    else 'No artwork published for this track yet',
+                    self.device.device_art_id,
+                )
                 art_id = self.device.device_art_id
                 frame_bytes = None
                 width, height = self.device.frame_size
             elif thumb_bytes:
                 frame_bytes, width, height = self._frames.frame_for(
-                    thumb_bytes, art_id, self.device.frame_size)
+                    thumb_bytes,
+                    art_id,
+                    self.device.frame_size,
+                )
                 if frame_bytes is None:
                     # Undecodable. Announcing an art_id we cannot then supply
                     # would only earn a geometry error from the device.
@@ -897,21 +907,23 @@ class NotificationsWrapper(QObject):
                 self._colours.clear()
 
             can_previous, can_next, can_play_pause = _available_controls(playback_info)
-            self.signal_track.emit(TrackInfo(
-                title=title,
-                artist=artist,
-                album=album,
-                status=status.name,
-                art_id=art_id,
-                # Withheld rather than downgraded: the window keeps the image it
-                # has and marks it stale, instead of flashing up a 60x60 leftover.
-                thumbnail=None if artwork_pending else thumb_bytes,
-                artwork_pending=artwork_pending,
-                timeline=timeline,
-                can_previous=can_previous,
-                can_next=can_next,
-                can_play_pause=can_play_pause,
-            ))
+            self.signal_track.emit(
+                TrackInfo(
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    status=status.name,
+                    art_id=art_id,
+                    # Withheld rather than downgraded: the window keeps the image it
+                    # has and marks it stale, instead of flashing up a 60x60 leftover.
+                    thumbnail=None if artwork_pending else thumb_bytes,
+                    artwork_pending=artwork_pending,
+                    timeline=timeline,
+                    can_previous=can_previous,
+                    can_next=can_next,
+                    can_play_pause=can_play_pause,
+                )
+            )
 
             payload = {
                 'status': status.name,
@@ -990,13 +1002,18 @@ class NotificationsWrapper(QObject):
             # Immediately, with no wait: this is also what stops the window
             # showing dimmed artwork for the rest of the song. Cannot recur, since
             # the allowance is spent and `artwork_pending` is false from here.
-            logger.debug('Artwork unsettled after %d reads; publishing what we have',
-                         self._chases)
+            logger.debug(
+                'Artwork unsettled after %d reads; publishing what we have',
+                self._chases,
+            )
             self._artwork.keep_as_own()
             self._schedule_refresh()
             return
 
-        logger.debug('Artwork not settled; read %d of %d',
-                     self._chases, ARTWORK_CHASE_LIMIT)
+        logger.debug(
+            'Artwork not settled; read %d of %d',
+            self._chases,
+            ARTWORK_CHASE_LIMIT,
+        )
         await asyncio.sleep(ARTWORK_CHASE_INTERVAL)
         self._schedule_refresh()

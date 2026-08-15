@@ -8,6 +8,7 @@ is used instead so the values can be read and edited with a text editor:
 
     %APPDATA%\\overThere\\Vobot Now Playing\\settings.ini
 """
+
 import logging
 import os
 
@@ -94,8 +95,7 @@ def init() -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     settings = _settings()
-    missing = {key: value for key, value in DEFAULTS.items()
-               if not settings.contains(key)}
+    missing = {key: value for key, value in DEFAULTS.items() if not settings.contains(key)}
     if missing:
         for key, value in missing.items():
             settings.setValue(key, value)
@@ -154,8 +154,7 @@ def light_brightness() -> int:
     try:
         value = int(_settings().value(KEY_LIGHT_BRIGHTNESS, fallback))
     except (TypeError, ValueError):
-        logger.warning('Stored light brightness is not a number; falling back to %d',
-                       fallback)
+        logger.warning('Stored light brightness is not a number; falling back to %d', fallback)
         return fallback
     return max(0, min(100, value))
 

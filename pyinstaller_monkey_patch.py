@@ -1,6 +1,5 @@
-import xml.dom.minidom
-
 import logging
+import xml.dom.minidom
 
 from PyInstaller.utils.win32.winmanifest import _DEFAULT_MANIFEST_XML as manifest_xml
 
