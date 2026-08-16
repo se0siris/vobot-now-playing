@@ -1,5 +1,5 @@
-VERSION_NUMBER = (1, 0, 0, 0)
-VERSION_DATE = '10/08/2026'
+VERSION_NUMBER = (1, 1, 0, 0)
+VERSION_DATE = '16/08/2026'
 VERSION = f'{".".join(map(str, VERSION_NUMBER[:3]))} - {VERSION_DATE}'
 
 APP_NAME = 'Vobot Now Playing'

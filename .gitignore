@@ -3,7 +3,10 @@
 .venv/
 build/
 dist/
+staging/
+*.zip
 *.pyc
 *.ini
 *.log
 *.db
+*.vbt

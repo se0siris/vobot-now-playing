@@ -53,16 +53,37 @@ jobs:
       - name: Build with PyInstaller
         run: uv run pyinstaller ${{ env.SPEC_FILE }} --noconfirm --clean
 
-      - name: Zip onedir output
+      # Both halves ship together so the versions cannot drift apart: the dock
+      # app is versioned separately from the client, and the ambient light needs
+      # a matching pair. The dock app is staged rather than added to the spec's
+      # `datas` deliberately - PyInstaller puts datas inside _internal/, which is
+      # where the client's own DLLs live and the last place a user would look for
+      # something they are meant to copy to a device. The folder keeps the name
+      # it must have under /apps on the dock, so it can be copied across as-is.
+      - name: Stage release contents
         shell: pwsh
         run: |
           $app = (Get-ChildItem dist -Directory | Select-Object -First 1).Name
           if (-not $app) { throw "PyInstaller produced no folder under dist/." }
+          New-Item -ItemType Directory -Path staging | Out-Null
+          Copy-Item "dist/$app" -Destination "staging/$app" -Recurse
+          Copy-Item esp32/apps/win_now_playing -Destination staging/win_now_playing -Recurse
+          # Each half carries its own licence, since they differ: the client is
+          # GPL v3 (from PyQt5) and the dock app is MIT. .txt so they open on a
+          # double click.
+          Copy-Item LICENSE "staging/$app/LICENSE.txt"
+          Copy-Item esp32/LICENSE staging/win_now_playing/LICENSE.txt
+          Copy-Item docs/release-readme.txt staging/README.txt
+          "APP_NAME=$app" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Zip staged output
+        shell: pwsh
+        run: |
           # GitHub rewrites spaces in asset names to dots, so slug the app name
           # rather than let it pick the separator.
-          $slug = ($app.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+          $slug = ($env:APP_NAME.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
           $zip = "$slug-$env:GITHUB_REF_NAME-windows-x64.zip"
-          Compress-Archive -Path "dist/$app" -DestinationPath $zip
+          Compress-Archive -Path staging/* -DestinationPath $zip
           "ZIP_NAME=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # archive: false uploads the zip as-is instead of wrapping it in a second

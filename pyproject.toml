@@ -1,6 +1,6 @@
 [project]
 name = "vobot-now-playing"
-version = "1.0.0"
+version = "1.1.0"
 description = "Displays the currently playing media from Windows media notifications on a Vobot Mini Dock."
 requires-python = ">=3.13,<3.14"
 dependencies = [
@@ -30,6 +30,8 @@ dev = [
 line-length = 120
 exclude = [
     ".venv",
+    "build/*",
+    "dist/*",
     ".claude/*",
     "tools/pyboard.py",   # vendored from MicroPython, left unmodified
     "ui/Ui_*.py",         # pyuic5-generated, do not edit manually
