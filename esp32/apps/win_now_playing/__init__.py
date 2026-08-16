@@ -126,10 +126,10 @@ _ZEROS = bytes(CHUNK)
 READ_CHUNK = 8192
 
 
-
 def _screen_resolution():
     try:
         import peripherals
+
         width, height = peripherals.screen.screen_resolution
         if width and height:
             return int(width), int(height)
@@ -158,9 +158,9 @@ FRAME_SIZE = FRAME_W * FRAME_H * 2  # RGB565, 2 bytes/pixel
 # _screen_resolution() treats `peripherals`: a firmware without it must not take
 # down on_start(), and one that raises must not do so on every push.
 
-light_owned = False        # we hold the peripheral and the system effect is suspended
-light_state = None         # last (r, g, b, brightness) applied, so repeats are free
-light_available = True     # cleared for good on the first failure
+light_owned = False  # we hold the peripheral and the system effect is suspended
+light_state = None  # last (r, g, b, brightness) applied, so repeats are free
+light_available = True  # cleared for good on the first failure
 
 # Distinguishes "the client said nothing about the light" from "the client said
 # turn it off". A plain None cannot, and the difference is the whole design.
@@ -175,10 +175,10 @@ def _ambient_light():
         return None
     try:
         import peripherals
+
         light = getattr(peripherals, 'ambient_light', None)
         if light is None:
-            logger.warning('No peripherals.ambient_light on this firmware; '
-                           'the light is disabled')
+            logger.warning('No peripherals.ambient_light on this firmware; the light is disabled')
             light_available = False
         return light
     except Exception as exc:
@@ -225,8 +225,7 @@ def _apply_light(spec):
                 logger.warning('Could not acquire the ambient light')
                 return
             light_owned = True
-            logger.info('Ambient light acquired (%s LEDs)',
-                        getattr(light, 'count', '?'))
+            logger.info('Ambient light acquired (%s LEDs)', getattr(light, 'count', '?'))
         light.set_color([(red, green, blue)], True)
         light.brightness(max(0, min(100, level)))
         light_state = state
@@ -277,29 +276,29 @@ _IDLE_PATTERN = IDLE_GROUND * (CHUNK // 2)
 # ---------------------------------------------------------------------------
 app_mgr = None
 
-scr = None            # root screen
-canvas = None         # artwork canvas, created once and rebuffered per frame
-info_bar = None       # translucent strip carrying title/artist
+scr = None  # root screen
+canvas = None  # artwork canvas, created once and rebuffered per frame
+info_bar = None  # translucent strip carrying title/artist
 title_label = None
 artist_label = None
-state_label = None    # play/pause glyph badge
-status_label = None   # centred error text
-placeholder = None    # app mark, shown whenever there is no artwork
+state_label = None  # play/pause glyph badge
+status_label = None  # centred error text
+placeholder = None  # app mark, shown whenever there is no artwork
 
-canvas_buf = None     # front buffer - what LVGL is displaying
-back_buf = None       # back buffer - what the socket streams into
+canvas_buf = None  # front buffer - what LVGL is displaying
+back_buf = None  # back buffer - what the socket streams into
 
 server = None
 server_task = None
 server_running = False
 client_task = None
-busy = False          # one client exchange at a time
+busy = False  # one client exchange at a time
 
 discovery_socket = None
 discovery_task = None
 discovery_running = False
 
-art_id = None         # id of the artwork currently in canvas_buf
+art_id = None  # id of the artwork currently in canvas_buf
 have_art = False
 # Whether the canvas already holds the placeholder ground. Repainting it is a
 # 150KB fill plus a full-screen invalidate, and the client re-sends its idle
@@ -333,7 +332,7 @@ def _fill(buf, pattern):
         end = offset + CHUNK
         if end > total:
             end = total
-        view[offset:end] = pattern[:end - offset]
+        view[offset:end] = pattern[: end - offset]
         offset = end
 
 
@@ -381,18 +380,23 @@ async def _read_frame(reader, buf, total):
             if not chunk:
                 break
             got = len(chunk)
-            view[read:read + got] = chunk
+            view[read : read + got] = chunk
         else:
-            got = await readinto(view[read:read + want])
+            got = await readinto(view[read : read + want])
             if not got:
                 break
         read += got
 
     elapsed = time.ticks_diff(time.ticks_ms(), started)
     if elapsed > 0:
-        logger.info('Frame: %d bytes in %dms (%d KB/s) over %d reads%s',
-                    read, elapsed, (read * 1000) // elapsed // 1024, reads,
-                    '' if readinto is not None else ' (no readinto)')
+        logger.info(
+            'Frame: %d bytes in %dms (%d KB/s) over %d reads%s',
+            read,
+            elapsed,
+            (read * 1000) // elapsed // 1024,
+            reads,
+            '' if readinto is not None else ' (no readinto)',
+        )
     return read
 
 
@@ -473,8 +477,7 @@ def _show_idle(title):
         _set_visible(status_label, 'status_shown', False)
         _show_placeholder()
         _set_label(title_label, 'title', title)
-        _set_label(artist_label, 'artist',
-                   '{}:{}'.format(_local_ip(), _configured_port()))
+        _set_label(artist_label, 'artist', '{}:{}'.format(_local_ip(), _configured_port()))
         _set_label(state_label, 'state', lv.SYMBOL.STOP)
         _set_visible(info_bar, 'bar_shown', True)
     except Exception as exc:
@@ -525,6 +528,7 @@ def _device_identity():
     identity = {}
     try:
         import device
+
         identity['device_id'] = str(device.id)
         identity['model'] = str(device.model)
     except Exception:
@@ -644,8 +648,7 @@ async def handle_client(reader, writer):
             # Already displaying this artwork; the body stays on the client.
             pass
         elif image_len != FRAME_SIZE or width != FRAME_W or height != FRAME_H:
-            geometry_error = 'expected {}x{} ({} bytes)'.format(
-                FRAME_W, FRAME_H, FRAME_SIZE)
+            geometry_error = 'expected {}x{} ({} bytes)'.format(FRAME_W, FRAME_H, FRAME_SIZE)
         else:
             send_art = True
 
@@ -673,8 +676,7 @@ async def handle_client(reader, writer):
             if received != FRAME_SIZE:
                 # Leave art_id alone so the client resends on the next update.
                 _set_status('Short read: {}/{}'.format(received, FRAME_SIZE))
-                await _reply(writer, {'ok': False, 'error': 'short read',
-                                      'received': received})
+                await _reply(writer, {'ok': False, 'error': 'short read', 'received': received})
                 return
             _swap_frame()
             art_id = incoming_art
@@ -1101,8 +1103,8 @@ def get_settings_json():
                 'caption': 'Listen port',
                 'name': 'port',
                 'tip': 'Must match the port in the Windows client, or just use '
-                       'Discover there - UDP {} always reports the real port. '
-                       'Restart the app after changing.'.format(DISCOVERY_PORT),
+                'Discover there - UDP {} always reports the real port. '
+                'Restart the app after changing.'.format(DISCOVERY_PORT),
                 'attributes': {
                     'placeholder': str(DEFAULT_PORT),
                     'maxLength': 5,

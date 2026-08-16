@@ -31,9 +31,14 @@ line-length = 120
 exclude = [
     ".venv",
     ".claude/*",
-    "esp32/*",
     "tools/pyboard.py",   # vendored from MicroPython, left unmodified
     "ui/Ui_*.py",         # pyuic5-generated, do not edit manually
+]
+
+[tool.ruff.lint]
+# esp32/* is embedded MicroPython code, not CPython.
+exclude = [
+    "esp32/*",
 ]
 
 [tool.ruff.format]
